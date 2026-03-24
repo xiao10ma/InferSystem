@@ -1,5 +1,7 @@
 from .base import BaseRobot
-from .mock_mobile import MockMobileRobot
+from .flexiv import FlexivRobot
 
-__all__ = ["BaseRobot", "MockMobileRobot"]
-
+__all__ = [
+    "BaseRobot",
+    "FlexivRobot",
+]

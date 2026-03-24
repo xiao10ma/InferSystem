@@ -44,6 +44,16 @@ InferSystem/
 - Logging, telemetry, and replay if you need debugging on real devices.
 - Safety guards such as emergency stop, command rate limit, and health checks.
 
+## Conda environment
+
+Create and activate a Conda environment named `infersystem` with Python 3.11:
+
+```bash
+conda create -n infersystem python=3.10 -y
+conda activate infersystem
+pip install -e .
+```
+
 ## Quick start
 
 Run the examples from the repository root:
@@ -54,3 +64,32 @@ python Example/fleet_demo.py
 python -m unittest discover -s tests
 ```
 
+## Flexiv RDK
+
+This repository now includes a minimal Flexiv adapter at `Robot/flexiv.py` and a connectivity probe at `Example/flexiv_probe.py`.
+
+Install the Python package:
+
+```bash
+python3 -m pip install numpy spdlog flexivrdk
+```
+
+Probe a robot from the repository root:
+
+```bash
+python Example/flexiv_probe.py Rizon4-123456 --polls 3
+```
+
+Enable the robot before polling if your site setup is already complete:
+
+```bash
+python Example/flexiv_probe.py Rizon4-123456 --clear-fault --enable --polls 10
+```
+
+Official references:
+
+- Flexiv RDK manual: https://www.flexiv.com/software/rdk/manual/
+- Verify with example programs: https://www.flexiv.com/software/rdk/manual/verify_with_example_programs.html
+- Robot software compatibility: https://www.flexiv.com/software/rdk/manual/robot_software_compatibility.html
+
+Note: the official manual currently lists Python `3.8`, `3.10`, and `3.12` as supported versions for RDK 1.9.0. On this machine, `flexivrdk 1.9.0` imports successfully under Python `3.13.12`, but if you hit runtime issues on hardware, prefer a manual-listed interpreter first.

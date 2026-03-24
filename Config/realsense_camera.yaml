@@ -1,0 +1,79 @@
+# ============================================================
+# RealSense Multi-Camera Configuration
+# ============================================================
+# 单相机使用: RealSenseCamera.from_config("Config/realsense_camera.yaml")
+#   -> 读取 cameras 列表中的第一个
+# 多相机使用: MultiRealSenseManager(config_path="Config/realsense_camera.yaml")
+#   -> 读取 cameras 列表中的所有相机
+# ============================================================
+
+cameras:
+  - name: wrist_camera
+    serial_number: "349622074137"    # D435I
+    robot_name: flexiv_arm
+    enable_depth: true
+    align_depth_to_color: true
+
+    streams:
+      - name: color
+        enabled: true
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+
+      - name: depth
+        enabled: true
+        width: 640
+        height: 480
+        fps: 30
+        encoding: z16
+        aligned_to: color
+
+    # 相机参数 (关闭自动曝光, 固定曝光值)
+    params:
+      exposure.auto: false
+      exposure.value: 200
+      gain: 64
+      white_balance.auto: false
+      white_balance.value: 4600
+      brightness: 0
+      contrast: 50
+      gamma: 300
+      saturation: 64
+      sharpness: 50
+      laser_power: 150
+      emitter_enabled: 1
+
+  - name: front_camera
+    serial_number: "409122273675"    # D405
+    robot_name: flexiv_arm
+    enable_depth: true
+    align_depth_to_color: true
+
+    streams:
+      - name: color
+        enabled: true
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+
+      - name: depth
+        enabled: true
+        width: 640
+        height: 480
+        fps: 30
+        encoding: z16
+        aligned_to: color
+
+    params:
+      exposure.auto: false
+      exposure.value: 5000
+      gain: 16
+      white_balance.auto: false
+      white_balance.value: 4600
+      brightness: 0
+      contrast: 50
+      saturation: 64
+      sharpness: 50
