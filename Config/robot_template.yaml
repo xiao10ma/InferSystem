@@ -1,0 +1,9 @@
+name: ground_bot
+robot_type: mobile
+capabilities:
+  - navigation
+  - obstacle_avoidance
+limits:
+  max_linear_speed: 1.0
+  max_angular_speed: 0.8
+
