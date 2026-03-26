@@ -1,8 +1,0 @@
-name: front_camera
-sensor_type: camera
-robot_name: ground_bot
-driver: mock_camera
-params:
-  resolution: "1280x720"
-  fps: 30
-

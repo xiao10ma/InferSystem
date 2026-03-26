@@ -1,0 +1,111 @@
+# ============================================================
+# 单台机器人完整配置
+# 一个 YAML 启动一整套系统: 机器人 + 相机 + 触觉传感器
+# ============================================================
+
+robot:
+  type: flexiv                          # 驱动类型 (对应 FlexivRobot)
+  serial_number: "Rizon4-063609"
+  name: flexiv_arm
+
+  # 网络
+  network_interface_whitelist: []
+  verbose: true
+  lite: false
+
+  # 夹爪
+  gripper:
+    name: "Flexiv-GN01"                 # RDK 夹爪名称
+    max_width: 0.1                     # m
+    min_width: 0.0
+    max_velocity: 0.2                   # m/s
+    max_force: 30.0                     # N
+    default_velocity: 0.1
+    default_force: 15.0
+
+  # 控制参数
+  control:
+    default_mode: NRT_JOINT_POSITION    # 上电后默认模式
+    frequency_hz: 1000.0                # RT 控制频率
+    home_position_deg: [0, -20, 0, 90, 0, 20, 0]
+    home_velocity_scale: 30             # Home 速度百分比
+
+  # 关节极限 (可选，覆盖默认值)
+  # joint_limits:
+  #   position_min_deg: [-160, -130, -170, -107, -170, -80, -170]
+  #   position_max_deg: [+160, +130, +170, +154, +170, +260, +170]
+  #   velocity_max: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+  #   acceleration_max: [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+  #   torque_max: [100, 100, 50, 50, 20, 20, 20]
+
+# ── 相机 ──────────────────────────────────────────────────────
+
+cameras:
+  main_cam:
+    type: realsense
+    serial_number: "409122273675"
+    enable_depth: true
+    align_depth_to_color: true
+    streams:
+      color:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+      depth:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: z16
+        aligned_to: color
+    params:
+      exposure.auto: false
+      exposure.value: 200
+      gain: 64
+      white_balance.auto: false
+      white_balance.value: 4600
+
+  third_view_left:
+    type: realsense
+    serial_number: "349622074137"
+    enable_depth: false
+    streams:
+      color:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+    params:
+      exposure.auto: false
+      exposure.value: 200
+      gain: 64
+      white_balance.auto: false
+      white_balance.value: 4600
+
+# ── 触觉传感器 ────────────────────────────────────────────────
+
+tactile: {}
+  wrist_left:
+    type: opencv
+    device_path: "/dev/v4l/by-path/pci-0000:08:00.3-usb-0:1:1.0-video-index0"
+    width: 640
+    height: 480
+    fps: 30
+
+  wrist_right:
+    type: opencv
+    device_path: "/dev/v4l/by-path/pci-0000:08:00.3-usb-0:2:1.0-video-index0"
+    width: 640
+    height: 480
+    fps: 30
+
+# ── 推理 ──────────────────────────────────────────────────────
+
+inference:
+  server: "192.168.50.225:5555"         # 远程推理服务器地址
+  fps: 30                               # 推理请求频率
+  jpeg_quality: 90                      # 图像压缩质量
+  n_execute: 100                        # 每个 chunk 执行的 action 数
+  enabled_cameras:                      # 推理时使用的相机子集
+    - main_cam
+    - wrist_left

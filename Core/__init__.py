@@ -1,10 +1,19 @@
-from .types import InferenceCommand, Pose, RobotState, SensorFrame, utc_now
+from .types import (
+    GripperParams,
+    InferenceCommand,
+    Pose,
+    RobotParams,
+    RobotState,
+    SensorFrame,
+    utc_now,
+)
 
 __all__ = [
+    "GripperParams",
     "InferenceCommand",
     "Pose",
+    "RobotParams",
     "RobotState",
     "SensorFrame",
     "utc_now",
 ]
-

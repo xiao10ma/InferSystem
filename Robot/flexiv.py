@@ -1,37 +1,65 @@
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Sequence
 from typing import Any
 
-from Core import InferenceCommand, Pose, RobotState
+from Core import GripperParams, RobotParams
 from Robot.base import BaseRobot, GripperState
 
 
 class FlexivRobot(BaseRobot):
-    """飞夕机械臂驱动。
+    """飞夕机械臂驱动 (Rizon 系列)。
 
-    支持:
-      - 关节位置控制  (MoveJ primitive / NRT)
-      - 关节速度控制  (SendJointPosition / RT)
-      - 末端位姿控制  (MoveL primitive / NRT)
-      - 夹爪二值控制  (Grasp / Move)
-      - 夹爪宽度控制  (Move)
+    阻塞控制 (move_*):
+      - move_joint_position   → MoveJ primitive
+      - move_joint_velocity   → RT 关节位置循环 (速度积分)
+      - move_joint_torque     → RT 关节力矩循环
+      - move_eef              → MoveL primitive
+
+    流式控制 (send_*):
+      - send_joint_position   → SendJointPosition (NRT)
+      - send_joint_velocity   → SendJointPosition (RT, 速度积分)
+      - send_joint_torque     → SendJointTorque (RT)
+      - send_eef              → SendCartesianMotionForce (RT)
     """
 
-    # ── RDK 模式映射 ──────────────────────────────────────────
+    # ── Rizon4 默认硬件参数 ───────────────────────────────────
+
+    _DEFAULT_PARAMS = RobotParams(
+        dof=7,
+        joint_position_min=[-2.7925, -2.2689, -2.9671, -1.8675, -2.9671, -1.3963, -2.9671],
+        joint_position_max=[+2.7925, +2.2689, +2.9671, +2.6878, +2.9671, +4.5379, +2.9671],
+        joint_velocity_max=[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
+        joint_acceleration_max=[3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+        joint_torque_max=[100.0, 100.0, 50.0, 50.0, 20.0, 20.0, 20.0],
+        gripper=GripperParams(
+            max_width=0.1,
+            min_width=0.0,
+            max_velocity=0.2,
+            max_force=30.0,
+        ),
+        home_position=[0.0, -0.3491, 0.0, 1.5708, 0.0, 0.3491, 0.0],
+        control_frequency_hz=1000.0,
+    )
+
+    # ── RDK 模式映射 ─────────────────────────────────────────
+
     _MODE_MAP: dict[str, str] = {
         "primitive_execution": "NRT_PRIMITIVE_EXECUTION",
         "plan_execution": "NRT_PLAN_EXECUTION",
         "joint_position": "NRT_JOINT_POSITION",
         "joint_impedance": "NRT_JOINT_IMPEDANCE",
         "cartesian_motion_force": "NRT_CARTESIAN_MOTION_FORCE",
+        "rt_joint_position": "RT_JOINT_POSITION",
+        "rt_joint_torque": "RT_JOINT_TORQUE",
+        "rt_cartesian_motion_force": "RT_CARTESIAN_MOTION_FORCE",
     }
 
-    # 夹爪默认参数
-    _DEFAULT_GRIPPER_VELOCITY: float = 0.1   # m/s
-    _DEFAULT_GRIPPER_FORCE: float = 30.0     # N
-    _DEFAULT_GRIPPER_OPEN_WIDTH: float = 0.09  # m
+    # ================================================================
+    #  1. 初始化
+    # ================================================================
 
     def __init__(
         self,
@@ -43,6 +71,9 @@ class FlexivRobot(BaseRobot):
         lite: bool = False,
         robot_handle: Any | None = None,
         rdk_module: Any | None = None,
+        params: RobotParams | None = None,
+        gripper_config: dict[str, Any] | None = None,
+        control_config: dict[str, Any] | None = None,
     ) -> None:
         if rdk_module is None:
             import flexivrdk as rdk_module  # type: ignore[no-redef]
@@ -60,6 +91,23 @@ class FlexivRobot(BaseRobot):
             )
         )
         self._gripper: Any | None = None
+        self._gripper_inited: bool = False
+
+        # 参数: 外部传入 > 默认值
+        self._params = params if params is not None else self._DEFAULT_PARAMS
+
+        # 夹爪配置 (来自 YAML)
+        self._gripper_config = gripper_config or {}
+        self._gripper_name: str = self._gripper_config.get("name", "")
+        self._default_gripper_velocity: float = self._gripper_config.get(
+            "default_velocity", 0.1,
+        )
+        self._default_gripper_force: float = self._gripper_config.get(
+            "default_force", 30.0,
+        )
+
+        # 控制配置 (来自 YAML)
+        self._control_config = control_config or {}
 
         # 查询 DOF
         info = self._robot.info()
@@ -71,6 +119,81 @@ class FlexivRobot(BaseRobot):
             dof=dof,
         )
 
+    # ── 从 config dict 创建 (供 BaseRobot.from_config 调用) ──
+
+    @classmethod
+    def _from_config_dict(cls, robot_cfg: dict[str, Any]) -> FlexivRobot:
+        """从 YAML robot: 段创建 FlexivRobot。"""
+        gripper_cfg = robot_cfg.get("gripper", {})
+        control_cfg = robot_cfg.get("control", {})
+
+        # 从 YAML 构建 RobotParams (如果有 joint_limits 段则覆盖默认)
+        params = cls._build_params(robot_cfg)
+
+        return cls(
+            serial_number=robot_cfg["serial_number"],
+            name=robot_cfg.get("name"),
+            network_interface_whitelist=robot_cfg.get("network_interface_whitelist"),
+            verbose=robot_cfg.get("verbose", True),
+            lite=robot_cfg.get("lite", False),
+            params=params,
+            gripper_config=gripper_cfg,
+            control_config=control_cfg,
+        )
+
+    @classmethod
+    def _build_params(cls, robot_cfg: dict[str, Any]) -> RobotParams:
+        """从 YAML 构建 RobotParams，缺省字段使用默认值。"""
+        default = cls._DEFAULT_PARAMS
+        gripper_cfg = robot_cfg.get("gripper", {})
+        control_cfg = robot_cfg.get("control", {})
+        limits_cfg = robot_cfg.get("joint_limits", {})
+
+        # 夹爪参数
+        gripper = GripperParams(
+            max_width=gripper_cfg.get("max_width", default.gripper.max_width),
+            min_width=gripper_cfg.get("min_width", default.gripper.min_width),
+            max_velocity=gripper_cfg.get("max_velocity", default.gripper.max_velocity),
+            max_force=gripper_cfg.get("max_force", default.gripper.max_force),
+        ) if default.gripper else None
+
+        # Home 位置: YAML 用度，内部存弧度
+        home_deg = control_cfg.get("home_position_deg")
+        if home_deg is not None:
+            home_rad = [math.radians(d) for d in home_deg]
+        else:
+            home_rad = list(default.home_position)
+
+        # 关节极限: YAML 可选覆盖
+        pos_min_deg = limits_cfg.get("position_min_deg")
+        pos_max_deg = limits_cfg.get("position_max_deg")
+
+        return RobotParams(
+            dof=default.dof,
+            joint_position_min=(
+                [math.radians(d) for d in pos_min_deg]
+                if pos_min_deg else list(default.joint_position_min)
+            ),
+            joint_position_max=(
+                [math.radians(d) for d in pos_max_deg]
+                if pos_max_deg else list(default.joint_position_max)
+            ),
+            joint_velocity_max=limits_cfg.get(
+                "velocity_max", list(default.joint_velocity_max),
+            ),
+            joint_acceleration_max=limits_cfg.get(
+                "acceleration_max", list(default.joint_acceleration_max),
+            ),
+            joint_torque_max=limits_cfg.get(
+                "torque_max", list(default.joint_torque_max),
+            ),
+            gripper=gripper,
+            home_position=home_rad,
+            control_frequency_hz=control_cfg.get(
+                "frequency_hz", default.control_frequency_hz,
+            ),
+        )
+
     # ── 底层句柄 ──────────────────────────────────────────────
 
     @property
@@ -79,14 +202,82 @@ class FlexivRobot(BaseRobot):
 
     @property
     def gripper_handle(self) -> Any:
-        """获取夹爪句柄，首次访问时自动创建并初始化。"""
-        if self._gripper is None:
+        if not self._gripper_inited:
             self._gripper = self._rdk.Gripper(self._robot)
+            if self._gripper_name:
+                self._gripper.Enable(self._gripper_name)
+                tool = self._rdk.Tool(self._robot)
+                tool.Switch(self._gripper_name)
             self._gripper.Init()
             time.sleep(2.0)
+            self._gripper_inited = True
         return self._gripper
 
-    # ── RDK 状态查询 ──────────────────────────────────────────
+    # ── 生命周期 ──────────────────────────────────────────────
+
+    def enable(self) -> None:
+        self._robot.Enable()
+
+    def stop(self) -> None:
+        self._robot.Stop()
+
+    def clear_fault(self) -> None:
+        self._robot.ClearFault()
+
+    def switch_mode(self, mode_name: str) -> None:
+        rdk_name = self._MODE_MAP.get(mode_name, mode_name)
+        try:
+            rdk_mode = getattr(self._rdk.Mode, rdk_name)
+        except AttributeError as exc:
+            available = ", ".join(sorted(self._rdk.Mode.__members__.keys()))
+            raise ValueError(
+                f"Unknown mode '{mode_name}'. Available: {available}"
+            ) from exc
+        self._robot.SwitchMode(rdk_mode)
+
+    def get_params(self) -> RobotParams:
+        return self._params
+
+    # ================================================================
+    #  2. 数据读取
+    # ================================================================
+
+    def get_joint_positions(self) -> list[float]:
+        return _to_list(self._robot.states().q)
+
+    def get_joint_velocities(self) -> list[float]:
+        return _to_list(self._robot.states().dq)
+
+    def get_joint_torques(self) -> list[float]:
+        return _to_list(self._robot.states().tau)
+
+    def get_joint_external_torques(self) -> list[float]:
+        return _to_list(self._robot.states().tau_ext)
+
+    def get_joint_positions_desired(self) -> list[float]:
+        return _to_list(self._robot.states().theta)
+
+    def get_eef_pose(self) -> list[float]:
+        """TCP 位姿 [x, y, z, qw, qx, qy, qz]。"""
+        return _to_list(self._robot.states().tcp_pose)
+
+    def get_eef_velocity(self) -> list[float]:
+        return _to_list(self._robot.states().tcp_vel)
+
+    def get_external_wrench_in_tcp(self) -> list[float]:
+        return _to_list(self._robot.states().ext_wrench_in_tcp)
+
+    def get_external_wrench_in_world(self) -> list[float]:
+        return _to_list(self._robot.states().ext_wrench_in_world)
+
+    def get_gripper_state(self) -> GripperState:
+        gs = self.gripper_handle.states()
+        return GripperState(
+            width=gs.width,
+            max_width=self._params.gripper.max_width if self._params.gripper else 0.0,
+            force=gs.force,
+            is_moving=gs.is_moving,
+        )
 
     def is_connected(self) -> bool:
         return bool(self._robot.connected())
@@ -100,170 +291,59 @@ class FlexivRobot(BaseRobot):
     def is_fault(self) -> bool:
         return bool(self._robot.fault())
 
-    def is_stopped(self) -> bool:
-        return bool(self._robot.stopped())
+    # ================================================================
+    #  3a. 阻塞控制 (move_*)
+    # ================================================================
 
-    # ── 状态读取 ──────────────────────────────────────────────
-
-    def get_state(self) -> RobotState:
-        snap = self._snapshot()
-        tcp = snap["tcp_pose"]
-        return RobotState(
-            robot_name=self.name,
-            robot_type=self.robot_type,
-            pose=Pose(
-                x=_at(tcp, 0),
-                y=_at(tcp, 1),
-                z=_at(tcp, 2),
-            ),
-            battery_level=1.0,
-            metadata=snap,
-        )
-
-    def get_joint_positions(self) -> list[float]:
-        return _to_list(self._robot.states().q)
-
-    def get_joint_velocities(self) -> list[float]:
-        return _to_list(self._robot.states().dq)
-
-    def get_eef_pose(self) -> list[float]:
-        """返回 TCP 位姿 [x, y, z, qw, qx, qy, qz]。"""
-        return _to_list(self._robot.states().tcp_pose)
-
-    def get_gripper_state(self) -> GripperState:
-        gs = self.gripper_handle.states()
-        return GripperState(
-            width=gs.width,
-            max_width=self._DEFAULT_GRIPPER_OPEN_WIDTH,
-            force=gs.force,
-            is_moving=gs.is_moving,
-        )
-
-    def read_data(self) -> dict[str, Any]:
-        snap = self._snapshot()
-        return {
-            "robot_name": self.name,
-            "robot_type": self.robot_type,
-            "pose": {
-                "x": _at(snap["tcp_pose"], 0),
-                "y": _at(snap["tcp_pose"], 1),
-                "z": _at(snap["tcp_pose"], 2),
-                "yaw": 0.0,
-            },
-            "status": {
-                "connected": snap["connected"],
-                "operational": snap["operational"],
-                "busy": snap["busy"],
-                "fault": snap["fault"],
-                "mode": snap["mode"],
-                "operational_status": snap["operational_status"],
-            },
-            "info": {
-                "serial_number": snap["serial_number"],
-                "model_name": snap["model_name"],
-                "software_version": snap["software_version"],
-                "license_type": snap["license_type"],
-                "dof": snap["dof"],
-            },
-            "states": {
-                "q": snap["q"],
-                "dq": snap["dq"],
-                "theta": snap["theta"],
-                "tau": snap["tau"],
-                "tau_ext": snap["tau_ext"],
-                "tcp_pose": snap["tcp_pose"],
-                "tcp_velocity": snap["tcp_velocity"],
-                "ext_wrench_in_tcp": snap["ext_wrench_in_tcp"],
-                "ext_wrench_in_world": snap["ext_wrench_in_world"],
-                "timestamp": snap["timestamp"],
-            },
-        }
-
-    def _snapshot(self) -> dict[str, Any]:
-        robot = self._robot
-        states = robot.states()
-        info = robot.info()
-        return {
-            "serial_number": getattr(info, "serial_num", self.serial_number),
-            "model_name": getattr(info, "model_name", "unknown"),
-            "software_version": getattr(info, "software_ver", "unknown"),
-            "license_type": getattr(info, "license_type", "unknown"),
-            "connected": robot.connected(),
-            "operational": robot.operational(),
-            "busy": robot.busy(),
-            "fault": robot.fault(),
-            "mode": _enum_name(robot.mode()),
-            "operational_status": _enum_name(robot.operational_status()),
-            "dof": getattr(info, "DoF", None),
-            "q": _to_list(getattr(states, "q", [])),
-            "dq": _to_list(getattr(states, "dq", [])),
-            "theta": _to_list(getattr(states, "theta", [])),
-            "tau": _to_list(getattr(states, "tau", [])),
-            "tau_ext": _to_list(getattr(states, "tau_ext", [])),
-            "tcp_pose": _to_list(getattr(states, "tcp_pose", [])),
-            "tcp_velocity": _to_list(getattr(states, "tcp_vel", [])),
-            "ext_wrench_in_tcp": _to_list(getattr(states, "ext_wrench_in_tcp", [])),
-            "ext_wrench_in_world": _to_list(getattr(states, "ext_wrench_in_world", [])),
-            "timestamp": getattr(states, "timestamp", None),
-        }
-
-    # ── 关节位置控制 (MoveJ / NRT) ────────────────────────────
-
-    def move_joint(
+    def move_joint_position(
         self,
         positions: Sequence[float],
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
-        blocking: bool = True,
     ) -> None:
-        """MoveJ 到目标关节位置。
-
-        Args:
-            positions: 目标关节角度 (rad)，长度 = dof。
-            velocity: 速度缩放 (0~1)，映射到 SetVelocityScale(1~100)。
-            acceleration: 加速度缩放，目前未使用（MoveJ primitive 不支持独立加速度参数）。
-            blocking: True 则阻塞直到 reachedTarget。
-        """
         self._ensure_mode("NRT_PRIMITIVE_EXECUTION")
-
         if velocity is not None:
-            self._robot.SetVelocityScale(max(1, min(100, int(velocity * 100))))
-
+            self._robot.SetVelocityScale(_to_scale(velocity))
         jpos = self._rdk.JPos(list(positions))
         self._robot.ExecutePrimitive("MoveJ", {"target": jpos}, True)
-
-        if blocking:
-            self.wait_until_done()
-
-    # ── 关节速度控制 (RT) ─────────────────────────────────────
+        self.wait_until_done()
 
     def move_joint_velocity(
         self,
         velocities: Sequence[float],
+        duration: float,
     ) -> None:
-        """发送关节速度指令。
-
-        通过 SendJointPosition 实现：在当前位置上按速度积分一步。
-        需要在外部循环中以固定频率 (推荐 1kHz) 持续调用。
-        停止运动请发送全零速度。
-
-        注意: 首次调用前需确保已通过 switch_mode('RT_JOINT_POSITION')
-        切换到实时关节位置模式。
-        """
+        self._ensure_mode("RT_JOINT_POSITION")
+        dt = 1.0 / self._params.control_frequency_hz
+        steps = int(duration / dt)
         vel = [float(v) for v in velocities]
-        # 当前位置 + 速度 * dt 作为目标（dt 由 RDK 内部控制）
+        for _ in range(steps):
+            q = _to_list(self._robot.states().q)
+            target = [q[i] + vel[i] * dt for i in range(self.dof)]
+            self._robot.SendJointPosition(
+                target, vel,
+                [0.0] * self.dof, [0.0] * self.dof,
+            )
+            time.sleep(dt)
+        # 停止
         q = _to_list(self._robot.states().q)
-        dt = 0.001  # RDK RT 周期 1ms
-        target = [q[i] + vel[i] * dt for i in range(len(q))]
-        self._robot.SendJointPosition(
-            target,
-            vel,
-            [0.0] * len(target),   # acceleration
-            [0.0] * len(target),   # feedforward torque
-        )
+        zeros = [0.0] * self.dof
+        self._robot.SendJointPosition(q, zeros, zeros, zeros)
 
-    # ── 末端位姿控制 (MoveL / NRT) ───────────────────────────
+    def move_joint_torque(
+        self,
+        torques: Sequence[float],
+        duration: float,
+    ) -> None:
+        self._ensure_mode("RT_JOINT_TORQUE")
+        dt = 1.0 / self._params.control_frequency_hz
+        steps = int(duration / dt)
+        tau = [float(t) for t in torques]
+        for _ in range(steps):
+            self._robot.SendJointTorque(tau, False, [0.0] * self.dof)
+            time.sleep(dt)
+        self._robot.SendJointTorque([0.0] * self.dof, False, [0.0] * self.dof)
 
     def move_eef(
         self,
@@ -271,54 +351,80 @@ class FlexivRobot(BaseRobot):
         orientation: Sequence[float] | None = None,
         *,
         velocity: float | None = None,
-        blocking: bool = True,
     ) -> None:
-        """MoveL 直线运动到目标末端位姿。
-
-        Args:
-            position: 目标位置 [x, y, z] (米)。
-            orientation: 目标姿态 [rx, ry, rz] (rad, 旋转向量)。
-                         None 则保持当前姿态。
-            velocity: 速度缩放 (0~1)，映射到 SetVelocityScale(1~100)。
-            blocking: True 则阻塞直到 reachedTarget。
-        """
         self._ensure_mode("NRT_PRIMITIVE_EXECUTION")
-
         if velocity is not None:
-            self._robot.SetVelocityScale(max(1, min(100, int(velocity * 100))))
-
-        # 当前姿态作为默认
+            self._robot.SetVelocityScale(_to_scale(velocity))
         if orientation is None:
             tcp = _to_list(self._robot.states().tcp_pose)
-            # tcp_pose 格式: [x, y, z, qw, qx, qy, qz]
-            # Coord 需要旋转向量 [rx, ry, rz]，从四元数转换
             orientation = _quat_to_rotvec(tcp[3], tcp[4], tcp[5], tcp[6])
-
         coord = self._rdk.Coord(
-            list(position),         # [x, y, z]
-            list(orientation),      # [rx, ry, rz]
-            ["world", "world"],     # ref_frame
+            list(position), list(orientation), ["world", "world"],
         )
         self._robot.ExecutePrimitive("MoveL", {"target": coord}, True)
+        self.wait_until_done()
 
-        if blocking:
-            self.wait_until_done()
+    # ================================================================
+    #  3b. 流式控制 (send_*)
+    # ================================================================
 
-    # ── 夹爪控制: 二值 ────────────────────────────────────────
+    def send_joint_position(
+        self,
+        positions: Sequence[float],
+        velocities: Sequence[float] | None = None,
+        max_vel: Sequence[float] | None = None,
+        max_acc: Sequence[float] | None = None,
+    ) -> None:
+        p = self._params
+        vel = list(velocities) if velocities is not None else [0.0] * self.dof
+        mv = list(max_vel) if max_vel is not None else list(p.joint_velocity_max)
+        ma = list(max_acc) if max_acc is not None else list(p.joint_acceleration_max)
+        self._robot.SendJointPosition(list(positions), vel, mv, ma)
+
+    def send_joint_velocity(
+        self,
+        velocities: Sequence[float],
+    ) -> None:
+        dt = 1.0 / self._params.control_frequency_hz
+        vel = [float(v) for v in velocities]
+        q = _to_list(self._robot.states().q)
+        target = [q[i] + vel[i] * dt for i in range(self.dof)]
+        self._robot.SendJointPosition(
+            target, vel,
+            [0.0] * self.dof, [0.0] * self.dof,
+        )
+
+    def send_joint_torque(
+        self,
+        torques: Sequence[float],
+    ) -> None:
+        self._robot.SendJointTorque(
+            [float(t) for t in torques], False, [0.0] * self.dof,
+        )
+
+    def send_eef(
+        self,
+        pose: Sequence[float],
+        wrench: Sequence[float] | None = None,
+    ) -> None:
+        w = list(wrench) if wrench is not None else [0.0] * 6
+        self._robot.SendCartesianMotionForce(list(pose), w)
+
+    # ================================================================
+    #  3c. 夹爪控制
+    # ================================================================
 
     def gripper_set(self, open: bool) -> None:
-        """二值夹爪控制: True=打开, False=关闭 (夹紧)。"""
+        gp = self._params.gripper
         if open:
             self.gripper_handle.Move(
-                self._DEFAULT_GRIPPER_OPEN_WIDTH,
-                self._DEFAULT_GRIPPER_VELOCITY,
-                self._DEFAULT_GRIPPER_FORCE,
+                gp.max_width if gp else 0.09,
+                self._default_gripper_velocity,
+                self._default_gripper_force,
             )
         else:
-            self.gripper_handle.Grasp(self._DEFAULT_GRIPPER_FORCE)
+            self.gripper_handle.Grasp(self._default_gripper_force)
         self._wait_gripper()
-
-    # ── 夹爪控制: 宽度 ────────────────────────────────────────
 
     def gripper_move(
         self,
@@ -327,26 +433,27 @@ class FlexivRobot(BaseRobot):
         velocity: float | None = None,
         force: float | None = None,
     ) -> None:
-        """移动夹爪到指定宽度 (米)。"""
         self.gripper_handle.Move(
             width,
-            velocity if velocity is not None else self._DEFAULT_GRIPPER_VELOCITY,
-            force if force is not None else self._DEFAULT_GRIPPER_FORCE,
+            velocity if velocity is not None else self._default_gripper_velocity,
+            force if force is not None else self._default_gripper_force,
         )
         self._wait_gripper()
 
-    def _wait_gripper(self, timeout_s: float = 10.0) -> None:
-        time.sleep(0.3)
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if not self.gripper_handle.states().is_moving:
-                return
-            time.sleep(0.05)
+    # ================================================================
+    #  辅助
+    # ================================================================
 
-    # ── 等待运动完成 ──────────────────────────────────────────
+    def go_home(self, *, velocity: float | None = None) -> None:
+        self._ensure_mode("NRT_PRIMITIVE_EXECUTION")
+        vel_scale = self._control_config.get("home_velocity_scale", 50)
+        if velocity is not None:
+            vel_scale = _to_scale(velocity)
+        self._robot.SetVelocityScale(vel_scale)
+        self._robot.ExecutePrimitive("Home", {}, True)
+        self.wait_until_done(timeout_s=60.0)
 
     def wait_until_done(self, timeout_s: float = 30.0) -> bool:
-        """等待当前 primitive 执行完成 (reachedTarget)。"""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             ps = self._robot.primitive_states()
@@ -355,122 +462,28 @@ class FlexivRobot(BaseRobot):
             time.sleep(0.1)
         return self._robot.primitive_states().get("reachedTarget", 0) == 1
 
-    # ── 生命周期 ──────────────────────────────────────────────
-
-    def wait_until_operational(
-        self, timeout_s: float = 10.0, interval_s: float = 0.2
-    ) -> bool:
+    def wait_until_operational(self, timeout_s: float = 10.0) -> bool:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if self._robot.operational():
                 return True
-            time.sleep(interval_s)
+            time.sleep(0.2)
         return self._robot.operational()
 
-    def stop(self) -> None:
-        self._robot.Stop()
-
-    def clear_fault(self) -> None:
-        self._robot.ClearFault()
-
-    def enable(self) -> None:
-        self._robot.Enable()
-
-    def run_auto_recovery(self) -> None:
-        self._robot.RunAutoRecovery()
-
-    # ── 底层模式控制 ──────────────────────────────────────────
-
-    def switch_mode(self, mode_name: str) -> None:
-        """切换 RDK 控制模式。支持友好名称或原始模式名。"""
-        rdk_name = self._MODE_MAP.get(mode_name, mode_name)
-        try:
-            rdk_mode = getattr(self._rdk.Mode, rdk_name)
-        except AttributeError as exc:
-            available = ", ".join(sorted(self._rdk.Mode.__members__.keys()))
-            raise ValueError(
-                f"Unknown mode '{mode_name}'. Available: {available}"
-            ) from exc
-        self._robot.SwitchMode(rdk_mode)
-
-    def set_velocity_scale(self, value: int) -> None:
-        self._robot.SetVelocityScale(max(1, min(100, int(value))))
+    # ── 内部工具 ──────────────────────────────────────────────
 
     def _ensure_mode(self, target_mode: str) -> None:
-        """确保当前处于目标模式，否则自动切换。"""
         current = _enum_name(self._robot.mode())
         if current != target_mode:
             self.switch_mode(target_mode)
 
-    # ── 底层 primitive / plan 接口 ────────────────────────────
-
-    def execute_primitive(
-        self,
-        primitive_name: str,
-        *,
-        input_params: dict[str, Any] | None = None,
-        block_until_started: bool = True,
-    ) -> None:
-        self._robot.ExecutePrimitive(
-            primitive_name,
-            dict(input_params or {}),
-            block_until_started,
-        )
-
-    def execute_plan(
-        self,
-        plan: Any,
-        *,
-        continue_exec: bool = False,
-        block_until_started: bool = True,
-    ) -> None:
-        self._robot.ExecutePlan(plan, continue_exec, block_until_started)
-
-    # ── apply_command (兼容 SDK/runtime) ──────────────────────
-
-    def apply_command(self, command: InferenceCommand) -> None:
-        action = command.action.lower()
-        params = dict(command.parameters)
-
-        if action in ("noop", "idle"):
-            return
-
-        dispatch: dict[str, Any] = {
-            "stop": lambda: self.stop(),
-            "clear_fault": lambda: self.clear_fault(),
-            "enable": lambda: self.enable(),
-            "move_joint": lambda: self.move_joint(
-                params["positions"],
-                velocity=params.get("velocity"),
-                acceleration=params.get("acceleration"),
-            ),
-            "move_eef": lambda: self.move_eef(
-                params["position"],
-                orientation=params.get("orientation"),
-                velocity=params.get("velocity"),
-            ),
-            "gripper_set": lambda: self.gripper_set(params["open"]),
-            "gripper_move": lambda: self.gripper_move(
-                params["width"],
-                velocity=params.get("velocity"),
-                force=params.get("force"),
-            ),
-            "switch_mode": lambda: self.switch_mode(str(params["mode"])),
-            "set_velocity_scale": lambda: self.set_velocity_scale(int(params["value"])),
-            "execute_plan": lambda: self.execute_plan(
-                params["plan"],
-                continue_exec=params.get("continue_exec", False),
-            ),
-            "execute_primitive": lambda: self.execute_primitive(
-                str(params["name"]),
-                input_params=params.get("input_params"),
-            ),
-        }
-
-        handler = dispatch.get(action)
-        if handler is None:
-            raise ValueError(f"Unsupported command: {command.action}")
-        handler()
+    def _wait_gripper(self, timeout_s: float = 10.0) -> None:
+        time.sleep(0.3)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self.gripper_handle.states().is_moving:
+                return
+            time.sleep(0.05)
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────
@@ -488,14 +501,11 @@ def _to_list(value: Any) -> list[Any]:
         return [value]
 
 
-def _at(values: Sequence[Any], index: int) -> float:
-    return float(values[index]) if len(values) > index else 0.0
+def _to_scale(value: float) -> int:
+    return max(1, min(100, int(value * 100)))
 
 
 def _quat_to_rotvec(qw: float, qx: float, qy: float, qz: float) -> list[float]:
-    """四元数 (w, x, y, z) -> 旋转向量 [rx, ry, rz]。"""
-    import math
-    # 确保 qw >= 0 (取正半球)
     if qw < 0:
         qw, qx, qy, qz = -qw, -qx, -qy, -qz
     sin_half = math.sqrt(qx * qx + qy * qy + qz * qz)
