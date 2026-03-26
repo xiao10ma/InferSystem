@@ -1,13 +1,22 @@
 from .base import BaseSensor
-from .rgb_camera import BaseRGBCamera, CameraParamSpec, CameraStreamConfig, MockRGBCamera
+from .manager import SensorManager
+from .rgb_camera import BaseRGBCamera, MockRGBCamera
+from .tactile import BaseTactileSensor
 
 MockCamera = MockRGBCamera
 
 __all__ = [
     "BaseSensor",
+    "SensorManager",
     "BaseRGBCamera",
-    "CameraParamSpec",
-    "CameraStreamConfig",
+    "BaseTactileSensor",
     "MockRGBCamera",
     "MockCamera",
 ]
+
+# 按需导入硬件驱动
+try:
+    from .tactile import OpenCVTactileSensor
+    __all__ += ["OpenCVTactileSensor"]
+except ImportError:
+    pass

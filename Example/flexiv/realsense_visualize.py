@@ -2,13 +2,13 @@
 
 Usage:
     # Visualize all cameras (auto-detect)
-    python Example/realsense_visualize.py
+    python Example/flexiv/realsense_visualize.py
 
     # Visualize from config file
-    python Example/realsense_visualize.py --config Config/realsense_camera.yaml
+    python Example/flexiv/realsense_visualize.py --config Config/realsense_camera.yaml
 
     # Visualize color only (no depth)
-    python Example/realsense_visualize.py --no-depth
+    python Example/flexiv/realsense_visualize.py --no-depth
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

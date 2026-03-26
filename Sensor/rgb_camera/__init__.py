@@ -1,12 +1,15 @@
-from .base import BaseRGBCamera, CameraParamSpec, CameraStreamConfig
+from .base import BaseRGBCamera
 from .mock_camera import MockRGBCamera
-from .realsense_camera import MultiRealSenseManager, RealSenseCamera
 
 __all__ = [
     "BaseRGBCamera",
-    "CameraParamSpec",
-    "CameraStreamConfig",
     "MockRGBCamera",
-    "MultiRealSenseManager",
-    "RealSenseCamera",
 ]
+
+# RealSense 驱动按需导入 (需要 pyrealsense2)
+try:
+    from .realsense_camera import MultiRealSenseManager, RealSenseCamera
+
+    __all__ += ["MultiRealSenseManager", "RealSenseCamera"]
+except ImportError:
+    pass

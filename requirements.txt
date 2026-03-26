@@ -1,0 +1,8 @@
+# InferSystem 公共依赖
+# pip install -r requirements.txt
+
+pyyaml
+numpy
+opencv-python
+pyzmq
+msgpack

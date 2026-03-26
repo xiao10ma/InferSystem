@@ -1,8 +1,11 @@
-from .base import BaseRobot, GripperState
-from .flexiv import FlexivRobot
+from .base import BaseRobot
+from .gripper import BaseGripper, GripperState
+from .flexiv import FlexivGripper, FlexivRobot
 
 __all__ = [
+    "BaseGripper",
     "BaseRobot",
+    "FlexivGripper",
     "FlexivRobot",
     "GripperState",
 ]

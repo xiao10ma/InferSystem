@@ -19,8 +19,8 @@ robot:
     max_width: 0.1                     # m
     min_width: 0.0
     max_velocity: 0.2                   # m/s
-    max_force: 30.0                     # N
-    default_velocity: 0.1
+    max_force: 80.0                     # N
+    default_velocity: 0.2
     default_force: 15.0
 
   # 控制参数
@@ -84,7 +84,7 @@ cameras:
 
 # ── 触觉传感器 ────────────────────────────────────────────────
 
-tactile: {}
+tactile:
   wrist_left:
     type: opencv
     device_path: "/dev/v4l/by-path/pci-0000:08:00.3-usb-0:1:1.0-video-index0"
