@@ -154,24 +154,26 @@ for action_vec in actions:
 
 ## 运行示例
 
+所有示例统一以 YAML 配置文件作为第一个参数:
+
 ```bash
 # 探测机器人连接
-python Example/flexiv/probe.py Rizon4-123456 --polls 3
+python Example/flexiv/probe.py Config/rizon4_example.yaml --polls 3 --enable
 
 # 回 Home
-python Example/flexiv/go_home.py Rizon4-123456
+python Example/flexiv/go_home.py Config/rizon4_example.yaml --velocity 50
 
 # 夹爪控制
-python Example/flexiv/gripper.py Rizon4-123456 open close
+python Example/flexiv/gripper.py Config/rizon4_example.yaml open close
 
 # 配置驱动的推理控制 (完整控制循环)
 python Example/robot_inference.py Config/rizon4_example.yaml --prompt "pick up the cup"
 
 # Replay 录制轨迹
-python Example/flexiv/replay_parquet.py Rizon4-063609 /path/to/data.parquet
+python Example/flexiv/replay_parquet.py Config/rizon4_example.yaml /path/to/data.parquet
 
 # RealSense 相机可视化
-python Example/flexiv/realsense_visualize.py
+python Example/flexiv/realsense_visualize.py Config/rizon4_example.yaml
 ```
 
 ## YAML 配置

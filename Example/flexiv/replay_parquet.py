@@ -4,12 +4,11 @@
   action: List[float], 长度 8 = [joint_1, ..., joint_7, gripper] (rad)
     - joint_1..7: 关节角度 (rad)
     - gripper: 归一化宽度 [0, 1]，0=全闭, 1=全开
-  observation.state: List[float], 长度 22 = [q(7), dq(7), tau(7), gripper]
 
 用法:
-    python Example/flexiv/replay_parquet.py <robot_sn> <parquet_path>
-    python Example/flexiv/replay_parquet.py Rizon4-063609 /path/to/file.parquet --fps 30 --speed 0.5
-    python Example/flexiv/replay_parquet.py Rizon4-063609 /path/to/file.parquet --dry-run
+    python Example/flexiv/replay_parquet.py Config/rizon4_example.yaml /path/to/file.parquet
+    python Example/flexiv/replay_parquet.py Config/rizon4_example.yaml /path/to/file.parquet --fps 30 --speed 0.5
+    python Example/flexiv/replay_parquet.py Config/rizon4_example.yaml /path/to/file.parquet --dry-run
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace
-from Robot import FlexivRobot
+from Robot import BaseRobot
 
 
 def load_actions(parquet_path: str) -> list[list[float]]:
@@ -49,7 +48,7 @@ def load_actions(parquet_path: str) -> list[list[float]]:
 
 
 def replay(
-    robot_sn: str,
+    config_path: str,
     parquet_path: str,
     fps: float = 30.0,
     speed: float = 1.0,
@@ -57,7 +56,7 @@ def replay(
     gripper_speed: float = 0.2,
     dry_run: bool = False,
 ) -> None:
-    """在 Flexiv 上 replay 动作序列。"""
+    """在机械臂上 replay 动作序列。"""
 
     actions = load_actions(parquet_path)
     n_frames = len(actions)
@@ -70,9 +69,9 @@ def replay(
         print(f"...共 {n_frames} 帧")
         return
 
-    # ── 1. 连接机器人 ──
-    print(f"[1] 连接机器人 {robot_sn} ...")
-    with FlexivRobot(robot_sn) as robot:
+    # ── 1. 从配置创建机器人 ──
+    print("[1] 从配置创建机器人...")
+    with BaseRobot.from_config(config_path) as robot:
         if robot.is_fault():
             print("[!] 检测到故障，正在清除...")
             robot.clear_fault()
@@ -83,7 +82,7 @@ def replay(
         robot.enable()
         if not robot.wait_until_operational(timeout_s=30.0):
             raise RuntimeError("机器人未能在超时时间内变为 operational")
-        print("[1] 机器人已 operational")
+        print(f"[1] 机器人 '{robot.name}' 已 operational")
 
         # ── 2. 初始化夹爪 ──
         print("[2] 初始化夹爪...")
@@ -94,7 +93,7 @@ def replay(
         if gripper is not None:
             try:
                 gripper.connect()
-                gs = gripper.observe()
+                gripper.observe()
                 params = robot.get_params()
                 if params.gripper:
                     gripper_max_width = params.gripper.max_width
@@ -117,13 +116,11 @@ def replay(
             robot.move_joint_position(first_joints, velocity=0.3)
             print("[3] 已到达起始位置")
 
-            # ── 4. 切换到 RT 模式并 replay ──
+            # ── 4. Replay ──
             print(f"[4] 开始 replay: {n_frames} 帧, 预计 {n_frames * dt:.1f}s")
             print("    按 Ctrl+C 可安全停止")
 
-            # 使用 act() 逐帧发送关节位置
             frame_count = 0
-
             try:
                 for i, act in enumerate(actions):
                     t_loop = time.perf_counter()
@@ -203,11 +200,11 @@ def replay(
                 gripper.disconnect()
 
 
-def parse_args() -> argparse.Namespace:
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="从 parquet 文件 replay 录制的动作到 Flexiv 机械臂"
+        description="从 parquet 文件 replay 录制的动作到机械臂"
     )
-    parser.add_argument("robot_sn", help="机器人序列号，例如 Rizon4-063609")
+    parser.add_argument("config", help="YAML 配置文件路径")
     parser.add_argument("parquet_path", help="parquet 数据文件路径")
     parser.add_argument("--fps", type=float, default=30.0, help="录制时的帧率 (default: 30)")
     parser.add_argument("--speed", type=float, default=1.0, help="回放速度倍率 (default: 1.0)")
@@ -218,9 +215,9 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = main()
     replay(
-        robot_sn=args.robot_sn,
+        config_path=args.config,
         parquet_path=args.parquet_path,
         fps=args.fps,
         speed=args.speed,

@@ -1,14 +1,14 @@
-"""Detect all connected RealSense cameras and visualize their feeds.
+"""RealSense 相机检测与可视化。
 
-Usage:
-    # Visualize all cameras (auto-detect)
-    python Example/flexiv/realsense_visualize.py
+用法:
+    # 从配置文件加载相机
+    python Example/flexiv/realsense_visualize.py Config/rizon4_example.yaml
 
-    # Visualize from config file
-    python Example/flexiv/realsense_visualize.py --config Config/realsense_camera.yaml
+    # 自动检测所有相机
+    python Example/flexiv/realsense_visualize.py --auto
 
-    # Visualize color only (no depth)
-    python Example/flexiv/realsense_visualize.py --no-depth
+    # 不显示深度
+    python Example/flexiv/realsense_visualize.py Config/rizon4_example.yaml --no-depth
 """
 from __future__ import annotations
 
@@ -20,53 +20,43 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from Sensor.rgb_camera import MultiRealSenseManager, RealSenseCamera
+from Sensor.rgb_camera import MultiRealSenseManager
 
 
 def print_device_info() -> None:
     devices = MultiRealSenseManager.discover()
     if not devices:
-        print("No RealSense devices detected.")
+        print("未检测到 RealSense 设备。")
         return
-    print(f"Found {len(devices)} RealSense device(s):")
+    print(f"检测到 {len(devices)} 台 RealSense 设备:")
     for dev in devices:
         print(f"  - {dev['name']}  serial={dev['serial_number']}  fw={dev['firmware']}")
     print()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="RealSense camera detection and visualization")
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to YAML config (e.g. Config/realsense_camera.yaml)")
-    parser.add_argument("--no-depth", action="store_true",
-                        help="Disable depth stream visualization")
-    parser.add_argument("--serial", type=str, default=None,
-                        help="Only open a single camera by serial number")
+    parser = argparse.ArgumentParser(description="RealSense 相机检测与可视化")
+    parser.add_argument("config", nargs="?", default=None, help="YAML 配置文件路径")
+    parser.add_argument("--auto", action="store_true", help="自动检测所有相机 (无需配置文件)")
+    parser.add_argument("--no-depth", action="store_true", help="不显示深度流")
     args = parser.parse_args()
 
     print_device_info()
 
-    if args.serial:
-        cam = RealSenseCamera(
-            name="single_cam",
-            serial_number=args.serial,
+    if args.auto or args.config is None:
+        manager = MultiRealSenseManager.from_all_connected(
             enable_depth=not args.no_depth,
         )
-        manager = MultiRealSenseManager(cameras=[cam])
-    elif args.config:
+    else:
         config_path = Path(args.config)
         if not config_path.is_absolute():
             config_path = ROOT / config_path
         manager = MultiRealSenseManager(config_path=config_path)
-    else:
-        manager = MultiRealSenseManager.from_all_connected(
-            enable_depth=not args.no_depth,
-        )
 
-    print(f"Opening {len(manager.cameras)} camera(s)...")
+    print(f"打开 {len(manager.cameras)} 台相机...")
     for cam in manager.cameras:
         print(f"  - {cam.name} (serial={cam.serial_number})")
-    print("Press 'q' or Esc to exit.\n")
+    print("按 'q' 或 Esc 退出。\n")
 
     manager.visualize(show_depth=not args.no_depth)
 
