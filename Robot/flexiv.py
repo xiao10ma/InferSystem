@@ -176,17 +176,17 @@ class FlexivRobot(BaseRobot):
         "joint_position": "NRT_JOINT_POSITION",
         "joint_impedance": "NRT_JOINT_IMPEDANCE",
         "cartesian_motion_force": "NRT_CARTESIAN_MOTION_FORCE",
-        "rt_joint_position": "RT_JOINT_POSITION",
-        "rt_joint_torque": "RT_JOINT_TORQUE",
-        "rt_cartesian_motion_force": "RT_CARTESIAN_MOTION_FORCE",
+        "rt_joint_position": "NRT_JOINT_POSITION",
+        "rt_joint_torque": "NRT_JOINT_TORQUE",
+        "rt_cartesian_motion_force": "NRT_CARTESIAN_MOTION_FORCE",
     }
 
     # ActionSpace → 所需的 RDK 模式
     _ACTION_MODE: dict[ActionSpace, str] = {
-        ActionSpace.JOINT_POSITION: "RT_JOINT_POSITION",
-        ActionSpace.JOINT_VELOCITY: "RT_JOINT_POSITION",
-        ActionSpace.JOINT_TORQUE:   "RT_JOINT_TORQUE",
-        ActionSpace.CARTESIAN:      "RT_CARTESIAN_MOTION_FORCE",
+        ActionSpace.JOINT_POSITION: "NRT_JOINT_POSITION",
+        ActionSpace.JOINT_VELOCITY: "NRT_JOINT_POSITION",
+        ActionSpace.JOINT_TORQUE:   "NRT_JOINT_TORQUE",
+        ActionSpace.CARTESIAN:      "NRT_CARTESIAN_MOTION_FORCE",
     }
 
     _MODE_SWITCH_POLL_INTERVAL = 0.1
