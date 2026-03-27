@@ -60,8 +60,8 @@ cameras:
         aligned_to: color
     params:
       exposure.auto: false
-      exposure.value: 200
-      gain: 64
+      exposure.value: 4000
+      gain: 32
       white_balance.auto: false
       white_balance.value: 4600
 
@@ -78,7 +78,7 @@ cameras:
     params:
       exposure.auto: false
       exposure.value: 200
-      gain: 64
+      gain: 32
       white_balance.auto: false
       white_balance.value: 4600
 
@@ -105,7 +105,7 @@ inference:
   server: "192.168.50.225:5555"         # 远程推理服务器地址
   fps: 30                               # 推理请求频率
   jpeg_quality: 90                      # 图像压缩质量
-  n_execute: 100                        # 每个 chunk 执行的 action 数
+  n_execute: 40                        # 每个 chunk 执行的 action 数
   enabled_cameras:                      # 推理时使用的相机子集
     - main_cam
-    - wrist_left
+    - third_view_left

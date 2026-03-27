@@ -8,10 +8,17 @@
     python Example/robot_inference.py Config/rizon4_example.yaml --prompt "pick up the red cup"
     python Example/robot_inference.py Config/rizon4_example.yaml --dry-run
     python Example/robot_inference.py Config/rizon4_example.yaml --no-home --show-cameras
+    python Example/robot_inference.py Config/rizon4_example.yaml --save-video
+    python Example/robot_inference.py Config/rizon4_example.yaml --save-video --video-dir ./videos
+
+控制循环中的按键:
+    q — 退出
+    r — 重启推理 (reset policy + 清空缓存 + 回 Home)
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import signal
 import sys
@@ -40,6 +47,7 @@ log = logging.getLogger(__name__)
 # ── 优雅退出 ──
 
 _running = True
+_restart_requested = False
 
 
 def _signal_handler(sig, frame):
@@ -52,6 +60,88 @@ signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
+# ── 视频录制器 ────────────────────────────────────────────────
+
+
+class VideoRecorder:
+    """将多路相机帧水平拼接后写入视频文件。"""
+
+    def __init__(self, video_dir: str, fps: float) -> None:
+        self._video_dir = Path(video_dir)
+        self._video_dir.mkdir(parents=True, exist_ok=True)
+        self._fps = fps
+        self._writer: cv2.VideoWriter | None = None
+        self._video_path: Path | None = None
+        self._frame_count = 0
+
+    def start(self) -> Path:
+        """开始新的录制 session，返回视频文件路径。"""
+        self.stop()
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._video_path = self._video_dir / f"recording_{ts}.mp4"
+        self._frame_count = 0
+        log.info("开始录制视频: %s", self._video_path)
+        return self._video_path
+
+    def write_frame(self, images: dict[str, np.ndarray]) -> None:
+        """将多路图像水平拼接后写入一帧。"""
+        if not images:
+            return
+        frames = []
+        for cam_name in sorted(images.keys()):
+            frame = images[cam_name]
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            frames.append(frame)
+
+        # 统一高度后水平拼接
+        target_h = frames[0].shape[0]
+        resized = []
+        for f in frames:
+            if f.shape[0] != target_h:
+                scale = target_h / f.shape[0]
+                new_w = int(f.shape[1] * scale)
+                f = cv2.resize(f, (new_w, target_h))
+            resized.append(f)
+        canvas = np.hstack(resized)
+
+        # 延迟初始化 writer (需要知道帧尺寸)
+        if self._writer is None:
+            h, w = canvas.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self._writer = cv2.VideoWriter(
+                str(self._video_path), fourcc, self._fps, (w, h),
+            )
+            if not self._writer.isOpened():
+                log.error("无法创建视频文件: %s", self._video_path)
+                self._writer = None
+                return
+
+        self._writer.write(canvas)
+        self._frame_count += 1
+
+    def stop(self) -> None:
+        """结束当前录制。"""
+        if self._writer is not None:
+            self._writer.release()
+            self._writer = None
+            log.info(
+                "视频已保存: %s (%d 帧)", self._video_path, self._frame_count,
+            )
+
+    @property
+    def is_recording(self) -> bool:
+        return self._writer is not None or self._video_path is not None and self._frame_count == 0
+
+
+# ── 按键处理 ──────────────────────────────────────────────────
+
+
+def _poll_key() -> int:
+    """非阻塞读取按键，返回按键值或 -1。"""
+    return cv2.waitKey(1) & 0xFF
+
+
 # ── 主控制循环 ────────────────────────────────────────────────
 
 
@@ -62,11 +152,13 @@ def run_control_loop(
     dry_run: bool = False,
     go_home_first: bool = True,
     show_cameras: bool = False,
+    save_video: bool = False,
+    video_dir: str = "./videos",
     max_steps: int = 0,
     n_execute: int | None = None,
 ) -> None:
     """配置驱动的主控制循环: 感知 → 推理 → 执行。"""
-    global _running
+    global _running, _restart_requested
 
     config = load_yaml(config_path)
     infer_cfg = config.get("inference", {})
@@ -124,23 +216,44 @@ def run_control_loop(
                     # 确定推理使用的相机子集
                     enabled_cameras = infer_cfg.get("enabled_cameras")
 
-                    # 回 Home
-                    if go_home_first:
-                        log.info("回 Home 位置...")
-                        robot.go_home()
+                    # 视频录制器
+                    recorder = VideoRecorder(video_dir, fps) if save_video else None
 
-                    # Reset policy
-                    client.reset()
+                    # 使用 show_cameras 或 save_video 时都需要 OpenCV 窗口来捕获按键
+                    need_cv_window = show_cameras or save_video
 
-                    # ── 4. 控制循环 ──
-                    log.info(
-                        "[4/4] 启动控制循环 (%.0f Hz, n_execute=%d)",
-                        fps, n_execute,
-                    )
-                    step = 0
-                    chunk_id = 0
+                    # 初始启动
+                    _restart_requested = True  # 首次进入也走 restart 流程
 
                     while _running:
+                        # ── 重启处理 ──
+                        if _restart_requested:
+                            _restart_requested = False
+                            log.info("正在重启推理...")
+
+                            # 停止当前录制
+                            if recorder is not None:
+                                recorder.stop()
+
+                            # 回 Home
+                            if go_home_first:
+                                log.info("回 Home 位置...")
+                                robot.go_home()
+
+                            # Reset policy + 清空缓存
+                            client.reset()
+
+                            # 开始新录制
+                            if recorder is not None:
+                                recorder.start()
+
+                            step = 0
+                            chunk_id = 0
+                            log.info(
+                                "[4/4] 启动控制循环 (%.0f Hz, n_execute=%d)",
+                                fps, n_execute,
+                            )
+
                         if 0 < max_steps <= step:
                             log.info("达到最大步数 %d，停止", max_steps)
                             break
@@ -188,7 +301,7 @@ def run_control_loop(
 
                         # 执行
                         for i, action_vec in enumerate(actions[:n_exec]):
-                            if not _running:
+                            if not _running or _restart_requested:
                                 break
                             if 0 < max_steps <= step:
                                 break
@@ -197,12 +310,24 @@ def run_control_loop(
                             dispatcher.dispatch(action_vec)
                             step += 1
 
-                            # 可视化
-                            if show_cameras and sensors is not None and i % 5 == 0:
+                            # 录制视频 (每步都写帧)
+                            if recorder is not None and sensors is not None:
+                                recorder.write_frame(
+                                    sensors.read_images(enabled_cameras),
+                                )
+
+                            # 可视化 + 按键检测
+                            if need_cv_window and sensors is not None and i % 5 == 0:
                                 _show_camera_feeds(
                                     sensors.read_images(enabled_cameras),
                                     step, chunk_id, i, n_exec,
                                 )
+                                key = _poll_key()
+                                if key == ord("q"):
+                                    _running = False
+                                elif key == ord("r"):
+                                    log.info("收到重启请求 (按键 r)")
+                                    _restart_requested = True
 
                             # 频率控制
                             elapsed = time.perf_counter() - t_start
@@ -218,12 +343,14 @@ def run_control_loop(
                     log.info("控制循环结束: %d 步, %d chunks", step, chunk_id)
 
                 finally:
+                    if recorder is not None:
+                        recorder.stop()
                     client.close()
 
             finally:
                 if sensors is not None:
                     sensors.close_all()
-                if show_cameras:
+                if show_cameras or save_video:
                     cv2.destroyAllWindows()
 
         finally:
@@ -260,10 +387,6 @@ def _show_camera_feeds(
     if vis_frames:
         canvas = np.hstack(vis_frames)
         cv2.imshow("Robot Cameras", canvas)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            global _running
-            _running = False
 
 
 # ── 入口 ──
@@ -278,6 +401,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="模拟运行 (无真实硬件)")
     parser.add_argument("--no-home", action="store_true", help="跳过回 Home")
     parser.add_argument("--show-cameras", action="store_true", help="显示相机画面")
+    parser.add_argument("--save-video", action="store_true", help="保存视频 (多路相机水平拼接)")
+    parser.add_argument("--video-dir", default="./videos", help="视频保存目录 (默认: ./videos)")
     parser.add_argument("--max-steps", type=int, default=0, help="最大步数 (0=无限)")
     parser.add_argument(
         "--n-execute", type=int, default=None,
@@ -294,6 +419,8 @@ def main() -> None:
         dry_run=args.dry_run,
         go_home_first=not args.no_home,
         show_cameras=args.show_cameras,
+        save_video=args.save_video,
+        video_dir=args.video_dir,
         max_steps=args.max_steps,
         n_execute=args.n_execute,
     )
