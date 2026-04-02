@@ -249,7 +249,7 @@ class InferenceClient:
         for attempt in range(1, self._max_retries + 1):
             try:
                 assert self._socket is not None
-                self._socket.send(msgpack.packb(payload))
+                self._socket.send(msgpack.packb(payload, use_bin_type=True))
                 raw = self._socket.recv()
                 resp = msgpack.unpackb(raw, raw=False)
 
@@ -307,6 +307,11 @@ class InferenceClient:
         # JPEG 压缩图像
         encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
         for cam_name, img_bgr in images.items():
+            if not isinstance(img_bgr, np.ndarray):
+                logger.warning("跳过非 ndarray 图像: %s (type=%s)", cam_name, type(img_bgr).__name__)
+                continue
+            if img_bgr.dtype != np.uint8:
+                img_bgr = img_bgr.astype(np.uint8)
             ok, buf = cv2.imencode(".jpg", img_bgr, encode_params)
             if not ok:
                 raise RuntimeError(f"JPEG 编码失败: {cam_name}")

@@ -122,7 +122,7 @@ class InferenceServer:
 
     def _handle_request(self, raw: bytes) -> dict[str, Any]:
         try:
-            msg = msgpack.unpackb(raw, raw=False)
+            msg = msgpack.unpackb(raw, raw=False, strict_map_key=False)
         except Exception as e:
             return {"status": "error", "message": f"msgpack 解码失败: {e}"}
 

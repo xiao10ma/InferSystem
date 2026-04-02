@@ -242,8 +242,9 @@ class RealSenseCamera(BaseRGBCamera):
 
         color_frame = frames.get_color_frame()
         if color_frame:
+            raw = np.asanyarray(color_frame.get_data())
             streams["color"] = {
-                "data": np.asanyarray(color_frame.get_data()),
+                "data": raw if raw.dtype == np.uint8 else raw.astype(np.uint8),
                 "encoding": "bgr8",
                 "width": color_frame.get_width(),
                 "height": color_frame.get_height(),
