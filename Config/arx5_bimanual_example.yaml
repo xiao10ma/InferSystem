@@ -1,0 +1,113 @@
+# ============================================================
+# ARX5 双臂推理示例配置
+# 14 维状态/动作顺序:
+# [left_joint_0..5, left_gripper, right_joint_0..5, right_gripper]
+# ============================================================
+
+robot:
+  type: arx5_bimanual
+  name: arx5_dual_arm
+
+  left_arm:
+    model: X5
+    interface: can0             
+    canable_serial: "2070339D5743"
+
+  right_arm:
+    model: X5
+    interface: can1
+    canable_serial: "207B33715743"
+
+  control:
+    background_send_recv: true
+    frequency_hz: 500
+    controller_dt: 0.002
+    over_current_cnt_max: 1000
+    log_level: INFO
+    enable_gripper: true
+    gripper_kp: 4.0              # gripper gain 为 0 时的兜底值
+    gripper_kd: 0.24
+
+    # gripper position clamp (meter)；会与 gripper_closed_slack 合并允许略负读数/指令
+    left_gripper_min: 0.0
+    left_gripper_max: 0.082      # 与 SDK X5 gripper_width 一致
+    right_gripper_min: 0.0
+    right_gripper_max: 0.082     # 与 SDK X5 gripper_width 一致
+
+    # 可选：14 维 home 目标（默认全 0）
+    # home_position_deg_14: [0,0,0,0,0,0, 0, 0,0,0,0,0,0, 0]
+
+  # 可选：两臂共用关节限位（单位度/弧度系数）
+  joint_limits:
+    position_min_deg: [-170, -120, -170, -180, -120, -360]
+    position_max_deg: [170, 120, 170, 180, 120, 360]
+    velocity_max: [2.0, 2.0, 2.0, 2.0, 2.5, 3.0]
+    acceleration_max: [3.0, 3.0, 3.0, 3.0, 4.0, 4.0]
+    torque_max: [60.0, 60.0, 45.0, 30.0, 20.0, 10.0]
+
+cameras:
+  top_head:
+    type: realsense
+    serial_number: "346522070312"
+    enable_depth: false
+    streams:
+      color:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+
+  hand_left:
+    type: realsense
+    serial_number: "409122274673"
+    enable_depth: false
+    streams:
+      color:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+
+  hand_right:
+    type: realsense
+    serial_number: "409122273847"
+    enable_depth: false
+    streams:
+      color:
+        width: 640
+        height: 480
+        fps: 30
+        encoding: bgr8
+
+inference:
+  server: "192.168.50.142:5555"
+  fps: 30
+  jpeg_quality: 90
+  n_execute: 50
+  enabled_cameras:
+    - top_head
+    - hand_left
+    - hand_right
+
+  # 双臂 14 维 joint 输出（包含两侧 gripper）
+  action_space: joint_position
+  arm_dim: 14
+  gripper_index: -1
+
+  # 推理起始位置 (从训练数据统计的各 episode 起始姿态均值)
+  # 格式: [Lj0..Lj5, Lg, Rj0..Rj5, Rg] (14维, 弧度)
+  inference_home:
+    - -0.001   # Lj0
+    - 0.950    # Lj1
+    - 0.842    # Lj2
+    - -0.578   # Lj3
+    - 0.002    # Lj4
+    - -0.010   # Lj5
+    - 0.082    # Lg
+    - -0.003   # Rj0
+    - 0.863    # Rj1
+    - 0.777    # Rj2
+    - -0.523   # Rj3
+    - -0.005   # Rj4
+    - 0.004    # Rj5
+    - 0.075    # Rg

@@ -97,6 +97,13 @@ class BaseRobot(Registrable["BaseRobot"], ABC):
     def __exit__(self, *exc):
         self.disconnect()
 
+    def __del__(self):
+        """GC 回收时兜底调用 disconnect（确保机械臂安全停机）。"""
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+
     @abstractmethod
     def enable(self) -> None:
         """使能机器人。"""

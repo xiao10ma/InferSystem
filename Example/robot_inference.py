@@ -240,6 +240,22 @@ def run_control_loop(
                                 log.info("回 Home 位置...")
                                 robot.go_home()
 
+                            # 移动到训练起始位置 (inference_home)
+                            inf_home = infer_cfg.get("inference_home")
+                            if inf_home is not None:
+                                log.info("移动到训练起始位置 (%d 维)...", len(inf_home))
+                                # 从当前位置线性插值到 inference_home, 2 秒完成
+                                import numpy as _np
+                                cur_state = list(robot.observe().joint_positions)
+                                target = [float(v) for v in inf_home]
+                                n_interp = int(2.0 * fps)  # 2 秒
+                                for _t in range(n_interp):
+                                    alpha = (_t + 1) / n_interp
+                                    interp = [c + alpha * (t - c) for c, t in zip(cur_state, target)]
+                                    dispatcher.dispatch(interp)
+                                    time.sleep(1.0 / fps)
+                                log.info("已到达训练起始位置")
+
                             # Reset policy + 清空缓存
                             client.reset()
 
@@ -270,9 +286,13 @@ def run_control_loop(
                             except Exception:
                                 pass
 
-                        state_vec = build_state_vector(
-                            arm_state, gripper_width, gripper_max,
-                        )
+                        if gripper is not None:
+                            state_vec = build_state_vector(
+                                arm_state, gripper_width, gripper_max,
+                            )
+                        else:
+                            # ARX5 等夹爪已包含在 joint_positions 中，不追加额外维度
+                            state_vec = list(arm_state.joint_positions)
 
                         # 感知: 传感器图像
                         if sensors is not None:
@@ -294,10 +314,22 @@ def run_control_loop(
                         n_total = len(actions)
                         n_exec = min(n_execute, n_total)
 
+                        # ── 诊断日志 ──
+                        import numpy as _np
+                        _sv = _np.array(state_vec)
+                        _a0 = _np.array(actions[0])
+                        _aL = _np.array(actions[-1])
+                        _disp = _np.abs(_aL - _a0).sum()
+                        _cam_info = {k: v.shape for k, v in images.items()}
                         log.info(
                             "Chunk #%d: %d actions, 执行 %d, 推理 %.1fms",
                             chunk_id, n_total, n_exec, infer_ms,
                         )
+                        log.info("  State[14]: %s", _np.array2string(_sv, precision=4, suppress_small=True))
+                        log.info("  Act[0]:    %s", _np.array2string(_a0, precision=4, suppress_small=True))
+                        log.info("  Act[-1]:   %s", _np.array2string(_aL, precision=4, suppress_small=True))
+                        log.info("  Chunk displacement (L1): %.4f rad", _disp)
+                        log.info("  Cameras: %s", _cam_info)
 
                         # 执行
                         for i, action_vec in enumerate(actions[:n_exec]):

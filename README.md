@@ -69,6 +69,27 @@ pip install flexivrdk spdlog
 - 文档: [Flexiv RDK 手册](https://www.flexiv.com/software/rdk/manual/)
 - 兼容性: [robot_software_compatibility](https://www.flexiv.com/software/rdk/manual/robot_software_compatibility.html)
 
+#### Arx 方舟系列
+
+使用 `third_party/arx5-sdk` 编译 Python 绑定（`.so`），不要下载pip包：
+
+```bash
+cd third_party/arx5-sdk
+#下载依赖包
+conda install -n infersystem -c robostack-staging -c conda-forge \
+    ros-humble-kdl-parser \
+    ros-humble-ament-cmake \
+    cxx-compiler cmake ninja \
+    orocos-kdl eigen boost spdlog pybind11 \
+    "conda-forge::soem=1.4.0" \
+    -y  
+# Compile
+rm -rf build && mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DCMAKE_LIBRARY_PATH=$CONDA_PREFIX/lib -DPYTHON_EXECUTABLE=$(which python3)
+make -j$(nproc)
+# 编译产物: third_party/arx5-sdk/python/arx5_interface.cpython-*.so
+```
+
 #### (其他机器人)
 
 接入新机器人时，在此添加对应 SDK 的安装说明。
