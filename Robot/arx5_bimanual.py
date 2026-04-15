@@ -72,6 +72,10 @@ class Arx5BimanualRobot(BaseRobot):
         self._connected = False
         # connect 后按各臂 gripper_open_readout / YAML 覆盖刷新，与 Arx5Robot 一致
         self._gripper_sdk_sign: tuple[int, int] = (1, 1)
+        # 二值夹爪: action 位置值经阈值判断后 snap 到 close/open 极限
+        self._gripper_binary = bool(self._ctrl_cfg.get("gripper_binary", False))
+        self._gripper_binary_threshold = float(self._ctrl_cfg.get("gripper_binary_threshold", 0.04))
+        self._gripper_binary_close = float(self._ctrl_cfg.get("gripper_binary_close", -0.0))
 
     # ── 工厂 ──────────────────────────────────────────────────
 
@@ -333,6 +337,8 @@ class Arx5BimanualRobot(BaseRobot):
             timeout=min(_RESET_TIMEOUT_S, timeout_s),
             err_msg="ARX5 bimanual reset_to_home timeout",
         )
+        # reset_to_home 会将 gain 重置为 SDK 默认值，需要重新应用配置的 gripper 增益
+        self._apply_gripper_gains()
         return True
 
     # ── 动作实现 ──────────────────────────────────────────────
@@ -356,6 +362,13 @@ class Arx5BimanualRobot(BaseRobot):
             v = q_now
 
         self._clip_14d(v)
+
+        # 二值 snap: action 位置值 -> 极限位置（close=-0.01 / open=max），让电机顶到底施最大力
+        if self._gripper_binary and self._enable_gripper:
+            lg_max = self._params.joint_position_max[6]
+            rg_max = self._params.joint_position_max[13]
+            v[6]  = lg_max if float(v[6])  >= self._gripper_binary_threshold else self._gripper_binary_close
+            v[13] = rg_max if float(v[13]) >= self._gripper_binary_threshold else self._gripper_binary_close
 
         # gripper: 上层为规范开合量（张开为正，与 gripper_width 同向）；下发 SDK 需乘各臂 sign
         ls, rs = self._gripper_sdk_sign
@@ -534,10 +547,8 @@ class Arx5BimanualRobot(BaseRobot):
                 gain.gripper_kp = 0.0
                 gain.gripper_kd = 0.0
             else:
-                if gain.gripper_kp <= 1e-6:
-                    gain.gripper_kp = kp
-                if gain.gripper_kd <= 1e-6:
-                    gain.gripper_kd = kd
+                gain.gripper_kp = kp
+                gain.gripper_kd = kd
             self._ctrls[i].set_gain(gain)
 
     def _set_log_level(self, level_name: str) -> None:

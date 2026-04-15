@@ -109,3 +109,10 @@ inference:
   enabled_cameras:                      # 推理时使用的相机子集
     - main_cam
     - third_view_left
+
+  # 夹爪控制模式 (action 仍为归一化位置值 [0, 1])
+  # binary      — 阈值后调 set()，默认行为
+  # binary_move — 阈值后调 move(0) / move(max_width)
+  #               位控夹爪抓力不足时使用: 强制走到两端极限，电机持续施力
+  gripper_mode: binary                  # 可改为 binary_move
+  gripper_threshold: 0.5               # 开/合判断阈值

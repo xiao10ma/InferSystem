@@ -1,4 +1,4 @@
-"""从 parquet 或 LeRobot v3.0 数据集读取动作并在 ARX5 上 replay（默认双臂）。
+"""从 parquet / LeRobot v3.0 / DataCollectionSystemV2 数据集读取动作并在 ARX5 上 replay（默认双臂）。
 
 支持 action 维度:
   - 14 维: [lq0..lq5, lgrip, rq0..rq5, rgrip]（双臂）
@@ -14,6 +14,10 @@
     python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/ARX/005 --episode 0
     python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/ARX/005 --episode 2 --fps 30 --speed 0.5
 
+    # DataCollectionSystemV2 episode 目录
+    python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/data/2026_04_08/lirui/fold_pants/episode_0001
+    python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/data/2026_04_08/lirui/fold_pants/episode_0001 --play-video
+
     # 同步播放数据集中的视频
     python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/ARX/005 --episode 0 --play-video
     python Example/arx5/replay_parquet.py Config/arx5_bimanual_example.yaml ~/ARX/005 --episode 0 --play-video --cameras top left_wrist
@@ -27,23 +31,154 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import numpy as np
+
 from Core import Action, ActionSpace
 
 
 from Robot import BaseRobot
 
+# 14 维关节名称
+JOINT_NAMES_14 = [
+    "L_j0", "L_j1", "L_j2", "L_j3", "L_j4", "L_j5", "L_grip",
+    "R_j0", "R_j1", "R_j2", "R_j3", "R_j4", "R_j5", "R_grip",
+]
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def save_tracking_log(
+    out_dir: Path,
+    timestamps: list[float],
+    targets: list[list[float]],
+    actuals: list[list[float]],
+) -> Path:
+    """将目标与实际关节状态保存为 CSV 文件。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "tracking_log.csv"
+    n_dim = len(targets[0]) if targets else 0
+    names = JOINT_NAMES_14[:n_dim] if n_dim <= 14 else [f"j{i}" for i in range(n_dim)]
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        header = ["frame", "time_s"]
+        for n in names:
+            header += [f"target_{n}", f"actual_{n}", f"error_{n}"]
+        writer.writerow(header)
+
+        t0 = timestamps[0] if timestamps else 0.0
+        for idx, (ts, tgt, act) in enumerate(zip(timestamps, targets, actuals)):
+            row: list = [idx, f"{ts - t0:.4f}"]
+            for j in range(n_dim):
+                err = tgt[j] - act[j]
+                row += [f"{tgt[j]:.6f}", f"{act[j]:.6f}", f"{err:.6f}"]
+            writer.writerow(row)
+
+    log(f"  跟踪日志已保存: {csv_path}")
+    return csv_path
+
+
+def plot_tracking(
+    out_dir: Path,
+    timestamps: list[float],
+    targets: list[list[float]],
+    actuals: list[list[float]],
+) -> None:
+    """画出每个关节的目标 vs 实际 + 误差子图，保存为 PNG。"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        log("[WARN] matplotlib 未安装，跳过画图 (pip install matplotlib)")
+        return
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    t_arr = np.array(timestamps)
+    t_arr = t_arr - t_arr[0]
+    tgt_arr = np.array(targets)   # (N, D)
+    act_arr = np.array(actuals)   # (N, D)
+    err_arr = tgt_arr - act_arr
+    n_dim = tgt_arr.shape[1]
+    names = JOINT_NAMES_14[:n_dim] if n_dim <= 14 else [f"j{i}" for i in range(n_dim)]
+
+    # ---------- 全关节总览图 ----------
+    n_cols = 2
+    n_rows = (n_dim + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 3 * n_rows), sharex=True)
+    axes = axes.flatten()
+    for j in range(n_dim):
+        ax = axes[j]
+        ax.plot(t_arr, np.degrees(tgt_arr[:, j]) if j not in (6, 13) else tgt_arr[:, j],
+                label="target", linewidth=0.8, alpha=0.9)
+        ax.plot(t_arr, np.degrees(act_arr[:, j]) if j not in (6, 13) else act_arr[:, j],
+                label="actual", linewidth=0.8, alpha=0.9)
+        unit = "m" if j in (6, 13) else "deg"
+        ax.set_ylabel(f"{names[j]} ({unit})")
+        ax.legend(loc="upper right", fontsize=7)
+        ax.grid(True, alpha=0.3)
+    for j in range(n_dim, len(axes)):
+        axes[j].set_visible(False)
+    axes[-2 if n_dim % 2 == 0 else -1].set_xlabel("Time (s)")
+    if n_dim > 1:
+        axes[-1].set_xlabel("Time (s)")
+    fig.suptitle("Joint Tracking: Target vs Actual", fontsize=14)
+    fig.tight_layout()
+    overview_path = out_dir / "tracking_overview.png"
+    fig.savefig(overview_path, dpi=150)
+    plt.close(fig)
+    log(f"  总览图已保存: {overview_path}")
+
+    # ---------- 误差图 ----------
+    fig2, axes2 = plt.subplots(n_rows, n_cols, figsize=(16, 3 * n_rows), sharex=True)
+    axes2 = axes2.flatten()
+    for j in range(n_dim):
+        ax = axes2[j]
+        err_vals = np.degrees(err_arr[:, j]) if j not in (6, 13) else err_arr[:, j]
+        ax.plot(t_arr, err_vals, linewidth=0.8, color="red", alpha=0.8)
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        unit = "m" if j in (6, 13) else "deg"
+        ax.set_ylabel(f"{names[j]} err ({unit})")
+        rms = np.sqrt(np.mean(err_vals ** 2))
+        ax.set_title(f"RMS={rms:.4f} {unit}", fontsize=9)
+        ax.grid(True, alpha=0.3)
+    for j in range(n_dim, len(axes2)):
+        axes2[j].set_visible(False)
+    axes2[-2 if n_dim % 2 == 0 else -1].set_xlabel("Time (s)")
+    if n_dim > 1:
+        axes2[-1].set_xlabel("Time (s)")
+    fig2.suptitle("Joint Tracking Error (target - actual)", fontsize=14)
+    fig2.tight_layout()
+    error_path = out_dir / "tracking_error.png"
+    fig2.savefig(error_path, dpi=150)
+    plt.close(fig2)
+    log(f"  误差图已保存: {error_path}")
+
+    # ---------- PD 诊断摘要 ----------
+    log("\n  ══ PD 跟踪诊断摘要 ══")
+    for j in range(n_dim):
+        if j in (6, 13):
+            rms = np.sqrt(np.mean(err_arr[:, j] ** 2)) * 1000  # mm
+            peak = np.max(np.abs(err_arr[:, j])) * 1000
+            log(f"  {names[j]:>8s}: RMS={rms:7.2f} mm, Peak={peak:7.2f} mm")
+        else:
+            rms = np.degrees(np.sqrt(np.mean(err_arr[:, j] ** 2)))
+            peak = np.degrees(np.max(np.abs(err_arr[:, j])))
+            log(f"  {names[j]:>8s}: RMS={rms:7.3f} deg, Peak={peak:7.3f} deg")
+    log("")
 
 
 def _find_video_keys(info: dict) -> list[str]:
@@ -226,6 +361,86 @@ def load_actions(
     return actions
 
 
+def _is_dcsv2_dataset(path: Path) -> bool:
+    """判断路径是否为 DataCollectionSystemV2 episode 目录。"""
+    return path.is_dir() and (path / "metadata.json").exists()
+
+
+def _load_dcsv2_metadata(episode_dir: Path) -> dict:
+    """读取 DataCollectionSystemV2 的 metadata.json。"""
+    with open(episode_dir / "metadata.json") as f:
+        return json.load(f)
+
+
+def load_actions_from_dcsv2(
+    episode_dir: Path,
+    *,
+    start: int | None = None,
+    end: int | None = None,
+) -> list[list[float]]:
+    """从 DataCollectionSystemV2 episode 目录加载动作序列。
+
+    合并 observation.state.joint_position (12维) 和 observation.state.gripper (2维)
+    为 14 维: [left_j1..j6, left_gripper, right_j1..j6, right_gripper]
+    """
+    jp_csv = episode_dir / "observation.state.joint_position" / "data.csv"
+    grip_csv = episode_dir / "observation.state.gripper" / "data.csv"
+
+    if not jp_csv.exists():
+        raise FileNotFoundError(f"关节数据不存在: {jp_csv}")
+    if not grip_csv.exists():
+        raise FileNotFoundError(f"夹爪数据不存在: {grip_csv}")
+
+    # 读取关节位置: [left_j1..j6, right_j1..j6]
+    jp_rows: list[list[float]] = []
+    with open(jp_csv, newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader)  # skip header
+        for row in reader:
+            # 第一列是 timestamp_ms，后面是关节值
+            jp_rows.append([float(v) for v in row[1:]])
+
+    # 读取夹爪: [left_gripper, right_gripper]
+    grip_rows: list[list[float]] = []
+    with open(grip_csv, newline="") as f:
+        reader = csv.reader(f)
+        next(reader)  # skip header
+        for row in reader:
+            grip_rows.append([float(v) for v in row[1:]])
+
+    n = min(len(jp_rows), len(grip_rows))
+    if n == 0:
+        raise ValueError("数据为空")
+
+    # 合并: [left_j1..j6, left_gripper, right_j1..j6, right_gripper]
+    actions: list[list[float]] = []
+    for i in range(n):
+        jp = jp_rows[i]  # 12 维: left_j1..j6, right_j1..j6
+        grip = grip_rows[i]  # 2 维: left_gripper, right_gripper
+        if len(jp) == 12 and len(grip) == 2:
+            # 交错插入夹爪值
+            act = jp[:6] + [grip[0]] + jp[6:12] + [grip[1]]
+        else:
+            # 直接拼接
+            act = jp + grip
+        actions.append(act)
+
+    actions = actions[start:end]
+    log(f"加载完成: {len(actions)} 帧, action_dim={len(actions[0]) if actions else '?'}")
+    return actions
+
+
+def _find_dcsv2_video_keys(episode_dir: Path) -> list[str]:
+    """扫描 DataCollectionSystemV2 episode 目录下的视频。"""
+    keys = []
+    for d in sorted(episode_dir.iterdir()):
+        if d.is_dir() and d.name.startswith("observation.image."):
+            video_file = d / "video.mp4"
+            if video_file.exists():
+                keys.append(d.name)
+    return keys
+
+
 def replay(
     config_path: str,
     data_path: str,
@@ -241,13 +456,17 @@ def replay(
     dry_run: bool = False,
     play_video: bool = False,
     cameras: list[str] | None = None,
+    log_dir: str | None = None,
 ) -> None:
     """执行 replay 主流程。"""
     data_p = Path(data_path).expanduser().resolve()
     info: dict | None = None
+    dcsv2_meta: dict | None = None
     episode_meta: dict | None = None
+    dataset_type = "unknown"
 
     if _is_lerobot_dataset(data_p):
+        dataset_type = "lerobot"
         info = _load_lerobot_info(data_p)
         if fps is None:
             fps = float(info.get("fps", 30.0))
@@ -257,11 +476,22 @@ def replay(
         if play_video and episode is not None:
             all_eps = _load_lerobot_episode_meta(data_p)
             episode_meta = next((e for e in all_eps if e["episode_index"] == episode), None)
+    elif _is_dcsv2_dataset(data_p):
+        dataset_type = "dcsv2"
+        dcsv2_meta = _load_dcsv2_metadata(data_p)
+        if fps is None:
+            fps = float(dcsv2_meta.get("fps_config", dcsv2_meta.get("fps_actual", 30.0)))
+            log(f"从 metadata.json 读取 fps={fps}")
+        log(f"DataCollectionSystemV2 数据集: {dcsv2_meta.get('task_title', '')} "
+            f"(episode={dcsv2_meta.get('episode_id', '?')}, "
+            f"total_frames={dcsv2_meta.get('total_frames', '?')})")
+        actions = load_actions_from_dcsv2(data_p, start=start, end=end)
     else:
+        dataset_type = "parquet"
         if fps is None:
             fps = 30.0
         if play_video:
-            log("[WARN] --play-video 仅支持 LeRobot v3.0 数据集目录，忽略")
+            log("[WARN] --play-video 仅支持 LeRobot v3.0 / DCSv2 数据集目录，忽略")
             play_video = False
         actions = load_actions(str(data_p), column=column, start=start, end=end)
 
@@ -272,15 +502,27 @@ def replay(
         log(f"[DRY RUN] n_frames={n_frames}, fps={fps}, speed={speed}x, dt={dt:.4f}s")
         for i, act in enumerate(actions[:5]):
             log(f"  [{i:4d}] dim={len(act)} values={[round(float(v), 4) for v in act[:8]]}")
-        if play_video and info is not None:
-            all_video_keys = _find_video_keys(info)
+        if play_video:
+            if dataset_type == "lerobot" and info is not None:
+                all_video_keys = _find_video_keys(info)
+            elif dataset_type == "dcsv2":
+                all_video_keys = _find_dcsv2_video_keys(data_p)
+            else:
+                all_video_keys = []
             log(f"  数据集视频: {all_video_keys}")
         return
 
     # 准备视频播放器
     video_player: VideoPlayer | None = None
-    if play_video and info is not None:
-        all_video_keys = _find_video_keys(info)
+    if play_video:
+        # 收集所有可用视频 key
+        if dataset_type == "lerobot" and info is not None:
+            all_video_keys = _find_video_keys(info)
+        elif dataset_type == "dcsv2":
+            all_video_keys = _find_dcsv2_video_keys(data_p)
+        else:
+            all_video_keys = []
+
         # 用户指定 cameras 时做短名匹配（如 "top" 匹配 "observation.images.top"）
         if cameras:
             selected = []
@@ -295,19 +537,41 @@ def replay(
             video_keys = all_video_keys
 
         if video_keys:
-            chunk_idx = episode_meta["chunk_index"] if episode_meta else 0
-            file_idx = episode_meta["file_index"] if episode_meta else 0
             video_paths: dict[str, Path] = {}
-            for vk in video_keys:
-                vp = _resolve_video_path(data_p, info, vk, chunk_idx, file_idx)
-                if vp.exists():
-                    # 窗口名用短名（去掉 observation.images. 前缀）
-                    short = vk.replace("observation.images.", "")
-                    video_paths[short] = vp
-                else:
-                    log(f"[WARN] 视频文件不存在: {vp}")
+            if dataset_type == "lerobot" and info is not None:
+                chunk_idx = episode_meta["chunk_index"] if episode_meta else 0
+                file_idx = episode_meta["file_index"] if episode_meta else 0
+                for vk in video_keys:
+                    vp = _resolve_video_path(data_p, info, vk, chunk_idx, file_idx)
+                    if vp.exists():
+                        short = vk.replace("observation.images.", "")
+                        video_paths[short] = vp
+                    else:
+                        log(f"[WARN] 视频文件不存在: {vp}")
+            elif dataset_type == "dcsv2":
+                for vk in video_keys:
+                    vp = data_p / vk / "video.mp4"
+                    if vp.exists():
+                        short = vk.replace("observation.image.", "")
+                        video_paths[short] = vp
+                    else:
+                        log(f"[WARN] 视频文件不存在: {vp}")
             if video_paths:
                 video_player = VideoPlayer(video_paths)
+
+    # 准备记录目录
+    if log_dir:
+        tracking_dir = Path(log_dir).expanduser().resolve()
+    else:
+        tracking_dir = Path(data_path).expanduser().resolve()
+        if tracking_dir.is_file():
+            tracking_dir = tracking_dir.parent
+        tracking_dir = tracking_dir / "replay_tracking" / datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 跟踪数据缓冲
+    track_timestamps: list[float] = []
+    track_targets: list[list[float]] = []
+    track_actuals: list[list[float]] = []
 
     try:
         log("[1] 从配置创建机器人...")
@@ -321,12 +585,22 @@ def replay(
                 raise RuntimeError("机器人未能在超时时间内变为 operational")
             log(f"[2] 机器人 '{robot.name}' 已 operational (dof={robot.dof})")
 
+            # 打印当前 PD 增益信息（辅助调试）
+            if hasattr(robot, '_ctrls') and robot._ctrls is not None:
+                for idx, tag in enumerate(("left", "right")):
+                    gain = robot._ctrls[idx].get_gain()
+                    kp = np.array(gain.kp())
+                    kd = np.array(gain.kd())
+                    log(f"  [{tag}] joint kp={kp}, kd={kd}")
+                    log(f"  [{tag}] gripper kp={gain.gripper_kp:.3f}, kd={gain.gripper_kd:.3f}")
+
             # replay 前先回 Home，从已知安全位置出发
             if home_before:
                 log("[3] 回 Home（避免从任意姿态直接跳到第一帧）...")
                 robot.go_home()
 
             log(f"[4] 开始 replay: {n_frames} 帧, fps={fps}, speed={speed}x")
+            log(f"    跟踪数据将保存到: {tracking_dir}")
             frame_count = 0
             log_interval = max(int(fps), 1)
             # start 偏移量，用于视频帧对齐
@@ -342,16 +616,25 @@ def replay(
                     break
                 frame_count += 1
 
+                # 每帧记录目标和实际状态
+                s = robot.observe()
+                track_timestamps.append(t_loop)
+                track_targets.append(values[:len(s.joint_positions)])
+                track_actuals.append(list(s.joint_positions))
+
                 if video_player and video_player.active:
                     if not video_player.show_frame(frame_offset + i):
                         log("[!] 用户按 q 退出视频播放")
                         break
 
                 if i % log_interval == 0:
-                    s = robot.observe()
                     q = s.joint_positions
                     if len(q) >= 14:
-                        log(f"  [{i:4d}/{n_frames}] lj0={q[0]:.4f} rj0={q[7]:.4f} lg={q[6]:.4f} rg={q[13]:.4f}")
+                        err = [abs(values[j] - q[j]) for j in range(14)]
+                        max_err_idx = int(np.argmax(err))
+                        log(f"  [{i:4d}/{n_frames}] "
+                            f"lj0={q[0]:.4f} rj0={q[7]:.4f} lg={q[6]:.4f} rg={q[13]:.4f} "
+                            f"| max_err={np.degrees(err[max_err_idx]):.2f}deg @{JOINT_NAMES_14[max_err_idx]}")
                     else:
                         log(f"  [{i:4d}/{n_frames}] j0={q[0]:.4f}")
 
@@ -365,6 +648,12 @@ def replay(
                 log("[6] 回 Home...")
                 robot.go_home()
                 log("[7] Home 完成")
+
+        # replay 结束后保存跟踪数据并画图
+        if track_timestamps:
+            log("[8] 保存跟踪数据与分析图...")
+            save_tracking_log(tracking_dir, track_timestamps, track_targets, track_actuals)
+            plot_tracking(tracking_dir, track_timestamps, track_targets, track_actuals)
     finally:
         if video_player is not None:
             video_player.release()
@@ -385,6 +674,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="只打印动作信息，不连接机器人")
     parser.add_argument("--play-video", action="store_true", help="同步播放数据集中的视频 (仅 LeRobot 数据集)")
     parser.add_argument("--cameras", nargs="*", default=None, help="指定播放的相机名 (如 top left_wrist)，默认播放全部")
+    parser.add_argument("--log-dir", type=str, default=None, help="跟踪数据保存目录 (默认: 数据目录/replay_tracking/<时间戳>)")
     return parser.parse_args()
 
 
@@ -404,4 +694,5 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         play_video=args.play_video,
         cameras=args.cameras,
+        log_dir=args.log_dir,
     )

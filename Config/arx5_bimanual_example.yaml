@@ -22,28 +22,34 @@ robot:
     background_send_recv: true
     frequency_hz: 500
     controller_dt: 0.002
-    over_current_cnt_max: 1000
+    over_current_cnt_max: 5000       # 允许更多瞬态过流计数，防止误杀 (500Hz下=10秒)
     log_level: INFO
     enable_gripper: true
-    gripper_kp: 4.0              # gripper gain 为 0 时的兜底值
-    gripper_kd: 0.24
+    gripper_kp: 1.5              # gripper PD 增益 (SDK 默认 5.0)
+    gripper_kd: 0.1
+    gripper_closed_slack: 0.01    # 允许 gripper 指令最低到 -0.01
 
     # gripper position clamp (meter)；会与 gripper_closed_slack 合并允许略负读数/指令
-    left_gripper_min: 0.0
-    left_gripper_max: 0.082      # 与 SDK X5 gripper_width 一致
-    right_gripper_min: 0.0
-    right_gripper_max: 0.082     # 与 SDK X5 gripper_width 一致
+    left_gripper_min: -0.0      # 夹紧时编码器可能略低于 0
+    left_gripper_max: 0.0822      # 与 SDK X5 gripper_width 一致
+    right_gripper_min: -0.0
+    right_gripper_max: 0.0822     # 与 SDK X5 gripper_width 一致
+
+    # 二值夹爪控制: action 位置值经阈值判断后 snap 到两端极限，让电机顶到底施最大力
+    gripper_binary: false
+    gripper_binary_threshold: 0.02  # 单位 m；小于此值 -> -0.01（夹紧），否则 -> 0.082（张开）
+    gripper_binary_close: -0.000     # 夹紧目标，顶到底保证最大抓力
 
     # 可选：14 维 home 目标（默认全 0）
     # home_position_deg_14: [0,0,0,0,0,0, 0, 0,0,0,0,0,0, 0]
 
   # 可选：两臂共用关节限位（单位度/弧度系数）
   joint_limits:
-    position_min_deg: [-170, -120, -170, -180, -120, -360]
-    position_max_deg: [170, 120, 170, 180, 120, 360]
+    position_min_deg: [-179.9, -2.9, -5.7, -91.7, -90.0, -114.6]
+    position_max_deg: [150.0, 200.5, 183.3, 88.8, 90.0, 114.6]
     velocity_max: [2.0, 2.0, 2.0, 2.0, 2.5, 3.0]
     acceleration_max: [3.0, 3.0, 3.0, 3.0, 4.0, 4.0]
-    torque_max: [60.0, 60.0, 45.0, 30.0, 20.0, 10.0]
+    torque_max: [30.0, 30.0, 30.0, 15.0, 10.0, 5.0]
 
 cameras:
   top_head:
@@ -93,6 +99,8 @@ inference:
   action_space: joint_position
   arm_dim: 14
   gripper_index: -1
+  gripper_mode: binary                  # 可改为 binary_move
+  gripper_threshold: 0.04               # 开/合判断阈值
 
   # 推理起始位置 (从训练数据统计的各 episode 起始姿态均值)
   # 格式: [Lj0..Lj5, Lg, Rj0..Rj5, Rg] (14维, 弧度)

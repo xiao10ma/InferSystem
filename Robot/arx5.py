@@ -82,7 +82,11 @@ def apply_robot_config_overrides(
         robot_cfg.gripper_open_readout = float(ctrl_cfg["left_gripper_open_readout"])
     elif arm_side == "right" and "right_gripper_open_readout" in ctrl_cfg:
         robot_cfg.gripper_open_readout = float(ctrl_cfg["right_gripper_open_readout"])
-    elif "gripper_open_readout" in ctrl_cfg:
+    if "gripper_torque_max" in ctrl_cfg:
+        robot_cfg.gripper_torque_max = float(ctrl_cfg["gripper_torque_max"])
+    if "gripper_vel_max" in ctrl_cfg:
+        robot_cfg.gripper_vel_max = float(ctrl_cfg["gripper_vel_max"])
+    if "gripper_open_readout" in ctrl_cfg and arm_side is None:
         robot_cfg.gripper_open_readout = float(ctrl_cfg["gripper_open_readout"])
 
 
@@ -115,10 +119,8 @@ def apply_gripper_gain(ctrl: Any, enable: bool, kp: float, kd: float) -> None:
         gain.gripper_kp = 0.0
         gain.gripper_kd = 0.0
     else:
-        if gain.gripper_kp <= 1e-6:
-            gain.gripper_kp = kp
-        if gain.gripper_kd <= 1e-6:
-            gain.gripper_kd = kd
+        gain.gripper_kp = kp
+        gain.gripper_kd = kd
     ctrl.set_gain(gain)
 
 

@@ -44,6 +44,12 @@ class ActionDispatcher:
           arm_dim: 7             # 手臂动作维度 (默认 = robot.dof)
           gripper_index: 7       # 夹爪维度索引 (-1 表示无夹爪)
           gripper_threshold: 0.5 # 二值夹爪阈值
+          gripper_mode: binary   # 夹爪控制模式:
+                                 #   binary      — 阈值后调 set() (默认)
+                                 #   binary_move — 阈值后调 move(0) / move(max_width)
+                                 #                 适合位控夹爪抓力不足的场景:
+                                 #                 action 仍为位置值，但执行时
+                                 #                 强制打到两端极限，电机持续施力
           action_space: joint_position  # 动作空间 (默认)
     """
 
@@ -62,6 +68,7 @@ class ActionDispatcher:
         arm_dim: int | None = None,
         gripper_index: int = -1,
         gripper_threshold: float = 0.5,
+        gripper_mode: str = "binary",
         action_space: ActionSpace = ActionSpace.JOINT_POSITION,
     ) -> None:
         self._robot = robot
@@ -69,8 +76,10 @@ class ActionDispatcher:
         self._arm_dim = arm_dim if arm_dim is not None else robot.dof
         self._gripper_index = gripper_index
         self._gripper_threshold = gripper_threshold
+        self._gripper_mode = gripper_mode
         self._action_space = action_space
         self._last_gripper_open: bool | None = None
+        self._gripper_max_width: float | None = None  # binary_move 模式下缓存
 
     @classmethod
     def from_config(
@@ -82,7 +91,7 @@ class ActionDispatcher:
         """从 YAML 配置创建 dispatcher。
 
         读取 config["inference"] 段中的:
-          arm_dim, gripper_index, gripper_threshold, action_space
+          arm_dim, gripper_index, gripper_threshold, gripper_mode, action_space
         """
         infer_cfg = config.get("inference", {})
 
@@ -98,6 +107,7 @@ class ActionDispatcher:
                 robot.dof if gripper is not None else -1,
             ),
             gripper_threshold=infer_cfg.get("gripper_threshold", 0.5),
+            gripper_mode=infer_cfg.get("gripper_mode", "binary"),
             action_space=action_space,
         )
 
@@ -120,12 +130,42 @@ class ActionDispatcher:
             gripper_val = action_values[self._gripper_index]
             gripper_open = gripper_val >= self._gripper_threshold
             if gripper_open != self._last_gripper_open:
-                self._gripper.set(gripper_open)
+                self._dispatch_gripper(gripper_open)
                 self._last_gripper_open = gripper_open
                 logger.info(
-                    "[夹爪] val=%.3f → %s",
+                    "[夹爪] val=%.3f → %s (%s)",
                     gripper_val, "打开" if gripper_open else "关闭",
+                    self._gripper_mode,
                 )
+
+    def _dispatch_gripper(self, open: bool) -> None:
+        """根据 gripper_mode 执行夹爪动作。
+
+        binary      — 调 set()，由夹爪实现决定具体行为
+        binary_move — 调 move(0) / move(max_width)，强制走到两端极限
+                      适合位控夹爪: 电机持续施力直到到达目标位置，抓力更大
+        """
+        if self._gripper_mode == "binary_move":
+            if open:
+                max_width = self._get_gripper_max_width()
+                self._gripper.move(max_width)
+            else:
+                self._gripper.move(-0.01)
+        else:
+            # 默认 binary 模式
+            self._gripper.set(open)
+
+    def _get_gripper_max_width(self) -> float:
+        """获取夹爪最大宽度，首次调用时从硬件读取并缓存。"""
+        if self._gripper_max_width is None:
+            try:
+                state = self._gripper.observe()
+                if state.max_width > 0:
+                    self._gripper_max_width = state.max_width
+                    logger.info("[夹爪] max_width 缓存: %.4f m", self._gripper_max_width)
+            except Exception:
+                pass
+        return self._gripper_max_width or 0.08  # 读取失败时回退到 8cm
 
 
 def build_state_vector(
