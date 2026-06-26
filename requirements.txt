@@ -6,3 +6,5 @@ numpy
 opencv-python
 pyzmq
 msgpack
+piper_sdk
+python-can

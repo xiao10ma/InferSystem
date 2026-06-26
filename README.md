@@ -35,8 +35,8 @@ prompt (语言指令)      ─┘                          │
 ### 1. 创建 Conda 环境
 
 ```bash
-conda create -n infersystem python=3.10 -y
-conda activate infersystem
+conda create -n infer-mzp python=3.10 -y
+conda activate infer-mzp
 ```
 
 ### 2. 安装公共依赖
