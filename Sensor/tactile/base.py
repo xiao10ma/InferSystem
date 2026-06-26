@@ -4,6 +4,7 @@ from abc import abstractmethod
 from typing import Any
 
 from Core import SensorFrame, utc_now
+from Core.config_schema import TactileConfig
 from Core.registry import Registrable
 from Sensor.base import BaseSensor
 
@@ -38,22 +39,21 @@ class BaseTactileSensor(Registrable["BaseTactileSensor"], BaseSensor):
     def from_config(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: TactileConfig | dict[str, Any],
     ) -> BaseTactileSensor:
-        """从配置字典创建实例。"""
-        driver_type = cfg.get("type", "")
-        factory = cls._resolve_factory(driver_type)
-        return factory._from_config_dict(name, cfg, robot_name)
+        """从 typed config 或 dict 创建实例。"""
+        if isinstance(cfg, dict):
+            cfg = TactileConfig.model_validate(cfg)
+        factory = cls._resolve_factory(cfg.type)
+        return factory._from_config_dict(name, cfg)
 
     @classmethod
     def _from_config_dict(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: TactileConfig | dict[str, Any],
     ) -> BaseTactileSensor:
-        """从配置字典创建实例。子类覆盖此方法。"""
+        """从 typed config 创建实例。子类覆盖此方法。"""
         raise NotImplementedError(f"{cls.__name__} 未实现 _from_config_dict")
 
     def __init__(
@@ -63,9 +63,8 @@ class BaseTactileSensor(Registrable["BaseTactileSensor"], BaseSensor):
         width: int = 640,
         height: int = 480,
         fps: int = 30,
-        robot_name: str | None = None,
     ) -> None:
-        super().__init__(name=name, sensor_type="tactile", robot_name=robot_name)
+        super().__init__(name=name, sensor_type="tactile")
         self.width = width
         self.height = height
         self.fps = fps
@@ -76,27 +75,27 @@ class BaseTactileSensor(Registrable["BaseTactileSensor"], BaseSensor):
         return self.read_frame()
 
     def read_frame(self) -> SensorFrame:
-        """读取一帧触觉图像，返回 SensorFrame。"""
-        self._ensure_open()
-        frame_id = self._next_frame_index()
-        data = self._grab_frame()
-        return SensorFrame(
-            sensor_name=self.name,
-            sensor_type=self.sensor_type,
-            timestamp=utc_now(),
-            robot_name=self.robot_name,
-            payload={
-                "frame_id": frame_id,
-                "streams": {
-                    "tactile": {
-                        "data": data,
-                        "encoding": "bgr8",
-                        "width": self.width,
-                        "height": self.height,
+        """读取一帧触觉图像，返回 SensorFrame。线程安全。"""
+        with self._lock:
+            self._ensure_open()
+            frame_id = self._next_frame_index()
+            data = self._grab_frame()
+            return SensorFrame(
+                sensor_name=self.name,
+                sensor_type=self.sensor_type,
+                timestamp=utc_now(),
+                payload={
+                    "frame_id": frame_id,
+                    "streams": {
+                        "tactile": {
+                            "data": data,
+                            "encoding": "bgr8",
+                            "width": self.width,
+                            "height": self.height,
+                        },
                     },
                 },
-            },
-        )
+            )
 
     # ── 子类实现 ──
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from Core import Action, ActionSpace, ArmState, RobotParams, load_yaml
+from Core import Action, ActionSpace, ArmState, RobotParams, load_config, load_yaml
+from Core.config_schema import SystemConfig
 from Core.registry import Registrable
 from Robot.gripper import BaseGripper
 
@@ -46,7 +48,8 @@ class BaseRobot(Registrable["BaseRobot"], ABC):
         self.name = name
         self.robot_type = robot_type
         self.dof = dof
-        self.config: dict[str, Any] = {}  # 完整配置，供上层读取
+        self.config: dict[str, Any] = {}  # 完整原始配置，供上层读取
+        self.system_config: SystemConfig | None = None  # 验证后的完整配置
 
     # ── 从配置文件创建 ────────────────────────────────────────
 
@@ -60,20 +63,21 @@ class BaseRobot(Registrable["BaseRobot"], ABC):
           tactile:   触觉传感器配置
           inference: 推理参数
 
-        机器人只消费 robot: 段，完整配置存入 self.config。
+        使用 Pydantic schema 验证配置，机器人只消费 robot: 段。
         """
-        config = load_yaml(config_path)
-        robot_cfg = config.get("robot", {})
-        robot_type = robot_cfg.get("type", "")
+        system_config = load_config(config_path)
+        robot_type = system_config.robot.type
 
         factory = cls._resolve_factory(robot_type)
-        robot = factory._from_config_dict(robot_cfg)
-        robot.config = config
+        robot = factory._from_config_dict(system_config.robot)
+        robot.system_config = system_config
+        # 保留原始 dict 供尚未迁移的上层代码使用
+        robot.config = load_yaml(config_path)
         return robot
 
     @classmethod
-    def _from_config_dict(cls, robot_cfg: dict[str, Any]) -> BaseRobot:
-        """从配置字典创建实例。子类必须覆盖此方法。"""
+    def _from_config_dict(cls, robot_cfg: Any) -> BaseRobot:
+        """从 typed config 创建实例。子类必须覆盖此方法。"""
         raise NotImplementedError(
             f"{cls.__name__} 未实现 _from_config_dict"
         )
@@ -102,7 +106,11 @@ class BaseRobot(Registrable["BaseRobot"], ABC):
         try:
             self.disconnect()
         except Exception:
-            pass
+            logger.error(
+                "GC 回收时 disconnect() 异常: %s",
+                getattr(self, "name", self.__class__.__name__),
+                exc_info=True,
+            )
 
     @abstractmethod
     def enable(self) -> None:

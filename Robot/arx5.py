@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from Core import Action, ActionSpace, ArmState, RobotParams
+from Core.config_schema import Arx5RobotConfig
 from Robot.base import BaseRobot
 
 # 优先使用 third_party 下编译的 arx5-sdk，而非 pip 安装的版本
@@ -215,38 +216,42 @@ class Arx5Robot(BaseRobot):
     # ── 工厂 ──────────────────────────────────────────────────
 
     @classmethod
-    def _from_config_dict(cls, robot_cfg: dict[str, Any]) -> Arx5Robot:
-        """从 YAML robot: 段创建实例，合并 control 和 joint_limits 配置。"""
-        control_cfg = robot_cfg.get("control", {})
-        merged = dict(control_cfg)
-        if "joint_limits" in robot_cfg and "joint_limits" not in merged:
-            merged["joint_limits"] = robot_cfg["joint_limits"]
+    def _from_config_dict(cls, robot_cfg: Arx5RobotConfig | dict[str, Any]) -> Arx5Robot:
+        """从 typed config 创建实例。也兼容旧的 dict 调用路径。"""
+        if isinstance(robot_cfg, dict):
+            robot_cfg = Arx5RobotConfig.model_validate(robot_cfg)
+
+        ctrl = robot_cfg.control
+        merged = ctrl.model_dump(exclude_none=True)
+        if robot_cfg.joint_limits:
+            merged["joint_limits"] = robot_cfg.joint_limits.model_dump(exclude_none=True)
+
         return cls(
-            model=robot_cfg.get("model", "X5"),
-            interface_name=robot_cfg.get("interface_name", robot_cfg.get("interface", "can0")),
-            name=robot_cfg.get("name"),
-            use_background_send_recv=control_cfg.get("background_send_recv", True),
-            log_level=control_cfg.get("log_level", "INFO"),
+            model=robot_cfg.model,
+            interface_name=robot_cfg.resolved_interface,
+            name=robot_cfg.name,
+            use_background_send_recv=ctrl.background_send_recv,
+            log_level=ctrl.log_level,
             params=cls._build_params(robot_cfg),
             ctrl_cfg=merged,
         )
 
     @classmethod
-    def _build_params(cls, robot_cfg: dict[str, Any]) -> RobotParams:
-        """从 YAML 构建初始 RobotParams（connect 后会被 SDK 实际值覆盖）。"""
-        dof = int(robot_cfg.get("dof", 6))
-        control_cfg = robot_cfg.get("control", {})
-        lim = robot_cfg.get("joint_limits", {}) or control_cfg.get("joint_limits", {})
+    def _build_params(cls, cfg: Arx5RobotConfig) -> RobotParams:
+        """从 typed config 构建初始 RobotParams（connect 后会被 SDK 实际值覆盖）。"""
+        dof = cfg.dof
+        ctrl = cfg.control
+        lim = cfg.joint_limits  # 关节限位只从顶层读取，control 段不再重复
         return RobotParams(
             dof=dof,
-            joint_position_min=[math.radians(float(v)) for v in lim.get("position_min_deg", [-180.0] * dof)],
-            joint_position_max=[math.radians(float(v)) for v in lim.get("position_max_deg", [180.0] * dof)],
-            joint_velocity_max=[float(v) for v in lim.get("velocity_max", [2.0] * dof)],
-            joint_acceleration_max=[float(v) for v in lim.get("acceleration_max", [3.0] * dof)],
-            joint_torque_max=[float(v) for v in lim.get("torque_max", [30.0] * dof)],
+            joint_position_min=[math.radians(v) for v in (lim.position_min_deg if lim and lim.position_min_deg else [-180.0] * dof)],
+            joint_position_max=[math.radians(v) for v in (lim.position_max_deg if lim and lim.position_max_deg else [180.0] * dof)],
+            joint_velocity_max=list(lim.velocity_max if lim and lim.velocity_max else [2.0] * dof),
+            joint_acceleration_max=list(lim.acceleration_max if lim and lim.acceleration_max else [3.0] * dof),
+            joint_torque_max=list(lim.torque_max if lim and lim.torque_max else [30.0] * dof),
             gripper=None,
-            home_position=[math.radians(float(v)) for v in control_cfg.get("home_position_deg", [0.0] * dof)],
-            control_frequency_hz=float(control_cfg.get("frequency_hz", 500.0)),
+            home_position=[math.radians(v) for v in (ctrl.home_position_deg or [0.0] * dof)],
+            control_frequency_hz=ctrl.frequency_hz,
         )
 
     # ── 生命周期 ──────────────────────────────────────────────
@@ -344,6 +349,7 @@ class Arx5Robot(BaseRobot):
             eef = self._controller.get_eef_state()
             eef_pose = _pose6d_to_pose7(eef.pose_6d().tolist())
         except Exception:
+            logger.debug("ARX5 get_eef_state() 异常，eef_pose 置空", exc_info=True)
             eef_pose = []
         return ArmState(
             timestamp=time.perf_counter(),

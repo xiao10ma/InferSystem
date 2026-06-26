@@ -4,6 +4,7 @@ from abc import abstractmethod
 from typing import Any
 
 from Core import SensorFrame, utc_now
+from Core.config_schema import CameraConfig
 from Core.registry import Registrable
 from Sensor.base import BaseSensor
 
@@ -33,22 +34,21 @@ class BaseRGBCamera(Registrable["BaseRGBCamera"], BaseSensor):
     def from_config(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: CameraConfig | dict[str, Any],
     ) -> BaseRGBCamera:
-        """从配置字典创建实例。"""
-        driver_type = cfg.get("type", "")
-        factory = cls._resolve_factory(driver_type)
-        return factory._from_config_dict(name, cfg, robot_name)
+        """从 typed config 或 dict 创建实例。"""
+        if isinstance(cfg, dict):
+            cfg = CameraConfig.model_validate(cfg)
+        factory = cls._resolve_factory(cfg.type)
+        return factory._from_config_dict(name, cfg)
 
     @classmethod
     def _from_config_dict(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: CameraConfig | dict[str, Any],
     ) -> BaseRGBCamera:
-        """从配置字典创建实例。子类覆盖此方法。"""
+        """从 typed config 创建实例。子类覆盖此方法。"""
         raise NotImplementedError(f"{cls.__name__} 未实现 _from_config_dict")
 
     def __init__(
@@ -59,9 +59,8 @@ class BaseRGBCamera(Registrable["BaseRGBCamera"], BaseSensor):
         height: int = 480,
         fps: int = 30,
         params: dict[str, Any] | None = None,
-        robot_name: str | None = None,
     ) -> None:
-        super().__init__(name=name, sensor_type="rgb_camera", robot_name=robot_name)
+        super().__init__(name=name, sensor_type="rgb_camera")
         self.width = width
         self.height = height
         self.fps = fps
@@ -80,20 +79,20 @@ class BaseRGBCamera(Registrable["BaseRGBCamera"], BaseSensor):
         return self.read_frame()
 
     def read_frame(self) -> SensorFrame:
-        """读取一帧，返回 SensorFrame。"""
-        self._ensure_open()
-        frame_id = self._next_frame_index()
-        streams = self._grab_streams()
-        return SensorFrame(
-            sensor_name=self.name,
-            sensor_type=self.sensor_type,
-            timestamp=utc_now(),
-            robot_name=self.robot_name,
-            payload={
-                "frame_id": frame_id,
-                "streams": streams,
-            },
-        )
+        """读取一帧，返回 SensorFrame。线程安全。"""
+        with self._lock:
+            self._ensure_open()
+            frame_id = self._next_frame_index()
+            streams = self._grab_streams()
+            return SensorFrame(
+                sensor_name=self.name,
+                sensor_type=self.sensor_type,
+                timestamp=utc_now(),
+                payload={
+                    "frame_id": frame_id,
+                    "streams": streams,
+                },
+            )
 
     # ── 参数管理 ──
 

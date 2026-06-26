@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -19,6 +20,9 @@ class BaseSensor(ABC):
     数据读取:
       read()   → SensorFrame   统一输出帧
 
+    线程安全:
+      所有公开方法通过 _lock 保护，多线程可安全调用。
+
     子类必须实现:
       _open_device()   打开硬件
       _close_device()  释放硬件
@@ -29,14 +33,12 @@ class BaseSensor(ABC):
         self,
         name: str,
         sensor_type: str,
-        *,
-        robot_name: str | None = None,
     ) -> None:
         self.name = name
         self.sensor_type = sensor_type
-        self.robot_name = robot_name
         self._is_open = False
         self._frame_index = 0
+        self._lock = threading.Lock()
 
     @property
     def is_open(self) -> bool:
@@ -46,19 +48,21 @@ class BaseSensor(ABC):
 
     def open(self) -> None:
         """打开传感器硬件。幂等，重复调用无副作用。"""
-        if self._is_open:
-            return
-        self._open_device()
-        self._is_open = True
+        with self._lock:
+            if self._is_open:
+                return
+            self._open_device()
+            self._is_open = True
 
     def close(self) -> None:
         """关闭传感器硬件并释放资源。幂等。"""
-        if not self._is_open:
-            return
-        try:
-            self._close_device()
-        finally:
-            self._is_open = False
+        with self._lock:
+            if not self._is_open:
+                return
+            try:
+                self._close_device()
+            finally:
+                self._is_open = False
 
     def __enter__(self):
         self.open()

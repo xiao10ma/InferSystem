@@ -56,7 +56,6 @@ SensorFrame(
     sensor_name="wrist_left",
     sensor_type="tactile",
     timestamp=...,
-    robot_name=...,
     payload={
         "frame_id": 1,
         "streams": {
@@ -79,8 +78,8 @@ from Sensor.tactile.base import BaseTactileSensor
 @BaseTactileSensor.register("gelsight")
 class GelSightSensor(BaseTactileSensor):
     @classmethod
-    def _from_config_dict(cls, name, cfg, robot_name=None):
-        return cls(name=name, robot_name=robot_name, ...)
+    def _from_config_dict(cls, name, cfg):
+        return cls(name=name, ...)
 
     def _open_device(self) -> None: ...
     def _close_device(self) -> None: ...

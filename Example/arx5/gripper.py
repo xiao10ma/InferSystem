@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
@@ -29,11 +30,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
 
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
+log = logging.getLogger(__name__)
 
 
 def _map_target(action_name: str, width: float, gmin: float, gmax: float) -> float:
@@ -77,11 +77,12 @@ def main() -> None:
     side.add_argument("--left-only", action="store_true", help="双臂时仅控制左夹爪")
     side.add_argument("--right-only", action="store_true", help="双臂时仅控制右夹爪")
     args = parser.parse_args()
+    setup_run_logger(__file__, args.config)
 
-    log("[1] 从配置创建机器人...")
+    log.info("[1] 从配置创建机器人...")
     with BaseRobot.from_config(args.config) as robot:
         if robot.is_fault():
-            log("[2] 检测到故障，正在清除...")
+            log.info("[2] 检测到故障，正在清除...")
             robot.clear_fault()
             time.sleep(1.5)
         if not robot.is_operational():
@@ -91,7 +92,7 @@ def main() -> None:
 
         obs = robot.observe()
         dof = len(obs.joint_positions)
-        log(f"[2] 机器人 '{robot.name}' 已 operational (dof={dof})")
+        log.info(f"[2] 机器人 '{robot.name}' 已 operational (dof={dof})")
 
         # ── 单臂 7 维 ───────────────────────────────────────────
         if dof == 7:
@@ -105,7 +106,7 @@ def main() -> None:
                 q_now = list(robot.observe().joint_positions)
                 g = _map_target(act_name, args.width, gmin, gmax)
                 cmd = q_now[:6] + [g]
-                log(f"[{3 + i}] {act_name}: gripper={g:.4f} (range [{gmin:.4f}, {gmax:.4f}])")
+                log.info(f"[{3 + i}] {act_name}: gripper={g:.4f} (range [{gmin:.4f}, {gmax:.4f}])")
                 _hold_action(robot, cmd, args.hold)
 
         # ── 双臂 14 维 ──────────────────────────────────────────
@@ -138,7 +139,7 @@ def main() -> None:
         else:
             raise SystemExit(f"不支持的维度: dof={dof}")
 
-        log("[done] 完成")
+        log.info("[done] 完成")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@ __pycache__/
 .pytest_cache/
 
 videos/
+Logs/
 .claude/
-
-*.jpg
-*.csv
+infer_system.egg-info/
+.vscode/
+action_*_log.jsonl

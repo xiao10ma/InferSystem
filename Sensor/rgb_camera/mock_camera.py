@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
+
 from Sensor.rgb_camera.base import BaseRGBCamera
 
 
@@ -20,7 +22,6 @@ class MockRGBCamera(BaseRGBCamera):
         with_depth: bool = False,
         distance_sequence: Sequence[float] = (2.5, 0.5, 1.5, 3.0),
         params: dict[str, Any] | None = None,
-        robot_name: str | None = None,
         auto_open: bool = True,
     ) -> None:
         super().__init__(
@@ -29,7 +30,6 @@ class MockRGBCamera(BaseRGBCamera):
             height=height,
             fps=fps,
             params=params,
-            robot_name=robot_name,
         )
         self._with_depth = with_depth
         self._distance_sequence = tuple(distance_sequence)
@@ -42,7 +42,6 @@ class MockRGBCamera(BaseRGBCamera):
         cls,
         name: str,
         cfg: dict[str, Any],
-        robot_name: str | None = None,
     ) -> MockRGBCamera:
         return cls(
             name=name,
@@ -51,7 +50,6 @@ class MockRGBCamera(BaseRGBCamera):
             fps=cfg.get("fps", 30),
             with_depth=cfg.get("with_depth", False),
             params=cfg.get("params"),
-            robot_name=robot_name,
             auto_open=False,
         )
 
@@ -62,8 +60,12 @@ class MockRGBCamera(BaseRGBCamera):
         pass
 
     def _grab_streams(self) -> dict[str, dict[str, Any]]:
+        color_data = np.random.randint(
+            0, 256, (self.height, self.width, 3), dtype=np.uint8
+        )
         streams: dict[str, dict[str, Any]] = {
             "color": {
+                "data": color_data,
                 "encoding": "rgb8",
                 "width": self.width,
                 "height": self.height,
@@ -72,10 +74,13 @@ class MockRGBCamera(BaseRGBCamera):
         }
 
         if self._with_depth:
-            distance = self._distance_sequence[
-                (self._frame_index - 1) % len(self._distance_sequence)
-            ]
+            idx = (self._frame_index - 1) % len(self._distance_sequence)
+            distance = self._distance_sequence[idx]
+            depth_data = np.full(
+                (self.height, self.width), int(distance * 1000), dtype=np.uint16
+            )
             streams["depth"] = {
+                "data": depth_data,
                 "encoding": "z16",
                 "width": self.width,
                 "height": self.height,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -16,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
+
+log = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -28,6 +32,7 @@ def main() -> None:
     parser.add_argument("--enable", action="store_true", help="连接后自动使能")
     parser.add_argument("--clear-fault", action="store_true", help="连接后自动清除故障")
     args = parser.parse_args()
+    setup_run_logger(__file__, args.config)
 
     try:
         with BaseRobot.from_config(args.config) as robot:

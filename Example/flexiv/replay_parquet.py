@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
@@ -24,7 +25,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
+
+log = logging.getLogger(__name__)
 
 
 def load_actions(parquet_path: str) -> list[list[float]]:
@@ -168,7 +172,7 @@ def replay(
                                 gs = gripper.observe()
                                 grip_info = f" gripper_cmd={gripper_val:.3f} actual={gs.width/gripper_max_width:.3f}"
                             except Exception:
-                                pass
+                                log.warning("夹爪状态读取失败", exc_info=True)
                         print(
                             f"  [{i:4d}/{n_frames}] "
                             f"t={i/fps:.1f}s "
@@ -216,6 +220,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     args = main()
+    setup_run_logger(__file__, args.config)
     replay(
         config_path=args.config,
         parquet_path=args.parquet_path,

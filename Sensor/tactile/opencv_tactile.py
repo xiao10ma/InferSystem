@@ -6,6 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from Core.config_schema import TactileConfig
 from Sensor.tactile.base import BaseTactileSensor
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,12 @@ class OpenCVTactileSensor(BaseTactileSensor):
         width: int = 640,
         height: int = 480,
         fps: int = 30,
-        robot_name: str | None = None,
     ) -> None:
         super().__init__(
             name=name,
             width=width,
             height=height,
             fps=fps,
-            robot_name=robot_name,
         )
         self._device_path = device_path
         self._cap: cv2.VideoCapture | None = None
@@ -50,16 +49,16 @@ class OpenCVTactileSensor(BaseTactileSensor):
     def _from_config_dict(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: TactileConfig | dict[str, Any],
     ) -> OpenCVTactileSensor:
+        if isinstance(cfg, dict):
+            cfg = TactileConfig.model_validate(cfg)
         return cls(
             name=name,
-            device_path=cfg.get("device_path", 0),
-            width=cfg.get("width", 640),
-            height=cfg.get("height", 480),
-            fps=cfg.get("fps", 30),
-            robot_name=robot_name,
+            device_path=cfg.device_path,
+            width=cfg.width,
+            height=cfg.height,
+            fps=cfg.fps,
         )
 
     @property

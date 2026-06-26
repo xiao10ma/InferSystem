@@ -1,82 +1,89 @@
 # ============================================================
-# ARX5 单台机器人示例配置
-# 需先安装: pip install arx5-interface
+# ARX5 单臂推理配置
+# 控制模式通过 inference.action_space 切换:
+#   joint_position: 模型输出 [j0..j5, gripper]
+#   cartesian:      模型输出 [x,y,z,rot6d,gripper]
 # ============================================================
 
 robot:
   type: arx5
-  model: X5                     # X5 / L5，模型填错可能导致危险动作
-  interface: can0               # 与 DataCollectionSystem 一致（也兼容 interface_name）
-  canable_serial: "2070339D5743"  # 例如 207433A55743（用于左右绑定管理）
   name: arx5_arm
+  model: X5
+  interface: can0
+  canable_serial: "2070339D5743"
+  dof: 6
 
   control:
-    background_send_recv: true  # SDK 后台 500Hz 通信线程
-    frequency_hz: 500           # 与 controller_dt 对应
-    controller_dt: 0.002        # 1 / 500
-    over_current_cnt_max: 1000  # SDK 默认 20 过于敏感，提高阈值避免瞬态过流误触发
+    background_send_recv: true
+    frequency_hz: 500
+    controller_dt: 0.002
+    over_current_cnt_max: 1000
     log_level: INFO
-    enable_gripper: true        # 单臂默认关（若模型输出 7 维可开）
+
+    enable_gripper: true
     gripper_kp: 4.0
     gripper_kd: 0.24
-    gripper_min: 0.0
-    gripper_max: 0.082           # 与 SDK X5 gripper_width 一致
+    gripper_closed_slack: 0.01
+    gripper_width: 0.082
+    gripper_binary: false
+    gripper_binary_threshold: 0.04
+    gripper_binary_close: 0.0
+
     home_position_deg: [0, 0, 0, 0, 0, 0]
 
-    # SDK 安全限值覆盖 (会在实例化控制器前写入 RobotConfig)
-    joint_limits:
-      position_min_deg: [-170, -120, -170, -180, -120, -360]
-      position_max_deg: [170, 120, 170, 180, 120, 360]
-      velocity_max: [2.0, 2.0, 2.0, 2.0, 2.5, 3.0]
-      torque_max: [60.0, 60.0, 45.0, 30.0, 20.0, 10.0]
+  # 关节限位必须放在 robot.joint_limits，不要放到 robot.control 下面。
+  joint_limits:
+    position_min_deg: [-170, -120, -170, -180, -120, -360]
+    position_max_deg: [170, 120, 170, 180, 120, 360]
+    velocity_max: [2.0, 2.0, 2.0, 2.0, 2.5, 3.0]
+    torque_max: [60.0, 60.0, 45.0, 30.0, 20.0, 10.0]
 
-# 按需配置相机；这里只给最小示例
 cameras:
   top:
     type: realsense
     serial_number: "346522070312"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
+
   left_wrist:
     type: realsense
     serial_number: "409122274673"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
+
   right_wrist:
     type: realsense
     serial_number: "409122273847"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
 
 inference:
   server: "127.0.0.1:5555"
+  recv_timeout_ms: 30000
   fps: 30
-  jpeg_quality: 90
   n_execute: 20
-  enabled_cameras:
-    - top
-    - left_wrist
-    - right_wrist
-    
-  # ARX5 单臂：
-  # - 6 维: 仅关节
-  # - 7 维: [joint_0..5, gripper]（需 enable_gripper=true）
+  enabled_cameras: [top, left_wrist, right_wrist]
+
+  # 改成 cartesian 即使用 EEF 控制；cartesian 模型输出 10 维:
+  # [x,y,z,R00,R10,R20,R01,R11,R21,gripper]。
   action_space: joint_position
-  arm_dim: 6
+  policy_format: normal  # canonical 仅支持 action_space: cartesian。
+  canonical_dim: 32
+  arm_dim: 7
   gripper_index: -1
+
+  gripper_mode: binary
   gripper_threshold: 0.5
+
+  latency_compensation: true
+  smooth:
+    enabled: false
+    overlap_steps: 8
+
+  max_joint_delta_rad: 0.5
+  max_eef_delta_m: 0.10
+  max_eef_rotation_delta_rad: 0.8
+  max_joint_velocity_rad_s: 1.2

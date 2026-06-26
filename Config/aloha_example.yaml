@@ -1,0 +1,38 @@
+# ============================================================
+# Aloha / Piper 双臂推理示例配置
+# joint action: [Lj0..Lj5, Lg, Rj0..Rj5, Rg]
+# eef action: [left xyz+rot6d+gripper, right xyz+rot6d+gripper]
+# ============================================================
+
+robot:
+  type: aloha
+  name: aloha_dual_arm
+  can_interface_left: can0
+  can_interface_right: can1
+  speed_percent: 80
+  enable_timeout: 5.0
+  gripper_max_m: 0.07
+  control:
+    frequency_hz: 30
+
+cameras: {}
+
+inference:
+  server: "127.0.0.1:5555"
+  fps: 30
+  n_execute: 50
+
+  # joint_position: 模型输出 14 维 joint action。
+  # cartesian: 模型输出 20 维 eef action，每臂 10 维:
+  # [x,y,z,R00,R10,R20,R01,R11,R21,gripper]
+  action_space: joint_position
+  policy_format: normal  # canonical 仅支持 action_space: cartesian。
+  canonical_dim: 32
+  arm_dim: 14
+  gripper_index: -1
+  gripper_threshold: 0.04
+
+  latency_compensation: true
+  smooth:
+    enabled: false
+    overlap_steps: 8

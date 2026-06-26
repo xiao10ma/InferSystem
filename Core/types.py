@@ -13,11 +13,18 @@ def utc_now() -> datetime:
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:
-    """加载 YAML 配置文件。"""
+    """加载 YAML 配置文件（返回原始字典）。"""
     import yaml
 
     with open(path) as f:
         return yaml.safe_load(f) or {}
+
+
+def load_config(path: str | Path):
+    """加载 YAML 并返回经过 Pydantic 验证的 SystemConfig。"""
+    from Core.config_schema import SystemConfig
+
+    return SystemConfig.from_yaml(path)
 
 
 # ── 传感器数据 ────────────────────────────────────────────────
@@ -28,7 +35,6 @@ class SensorFrame:
     sensor_name: str
     sensor_type: str
     timestamp: datetime = field(default_factory=utc_now)
-    robot_name: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 

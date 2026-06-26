@@ -7,7 +7,7 @@
 ```text
 InferSystem/
 ├── Core/           共享类型 + 注册器 Mixin
-├── Robot/          机器人抽象 + 驱动 (Flexiv, ...)
+├── Robot/          机器人抽象 + 驱动 (Flexiv, ARX5, Aloha/Piper, UR)
 ├── Sensor/         传感器抽象 + 驱动 (RealSense, 触觉, ...)
 ├── Inference/      推理客户端/服务器 + Action 分发
 ├── Example/        示例脚本
@@ -35,8 +35,8 @@ prompt (语言指令)      ─┘                          │
 ### 1. 创建 Conda 环境
 
 ```bash
-conda create -n infer-mzp python=3.10 -y
-conda activate infer-mzp
+conda create -n infersystem python=3.10 -y
+conda activate infersystem
 ```
 
 ### 2. 安装公共依赖
@@ -89,6 +89,20 @@ cmake .. -DCMAKE_PREFIX_PATH=$CONDA_PREFIX -DCMAKE_LIBRARY_PATH=$CONDA_PREFIX/li
 make -j$(nproc)
 # 编译产物: third_party/arx5-sdk/python/arx5_interface.cpython-*.so
 ```
+
+#### Aloha / Piper
+
+```bash
+pip install "piper_sdk==0.6.1" "python-can==4.6.1"
+```
+
+#### UR 系列
+
+```bash
+pip install ur-rtde
+```
+
+Robotiq 夹爪还需要在运行环境中提供 `robotiq_gripper`、`ur_collector` 或 `SDK.ur` 之一。
 
 #### (其他机器人)
 
@@ -222,6 +236,7 @@ tactile:
   wrist_left:
     type: opencv
     device_path: "/dev/v4l/by-path/..."
+    mapped_key: observation/tactile_image
 
 inference:
   server: "192.168.50.225:5555"

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from pathlib import Path
+import logging
 from typing import Any
 
 import numpy as np
 import pyrealsense2 as rs
 
-from Core import SensorFrame, load_yaml
+logger = logging.getLogger(__name__)
+
+from Core import SensorFrame
+from Core.config_schema import CameraConfig
 from Sensor.rgb_camera.base import BaseRGBCamera
 
 
@@ -80,7 +82,6 @@ class RealSenseCamera(BaseRGBCamera):
         depth_height: int | None = None,
         depth_fps: int | None = None,
         params: dict[str, Any] | None = None,
-        robot_name: str | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -88,7 +89,6 @@ class RealSenseCamera(BaseRGBCamera):
             height=height,
             fps=fps,
             params=params,
-            robot_name=robot_name,
         )
         self._serial_number = serial_number
         self._enable_depth = enable_depth
@@ -108,25 +108,24 @@ class RealSenseCamera(BaseRGBCamera):
     def _from_config_dict(
         cls,
         name: str,
-        cfg: dict[str, Any],
-        robot_name: str | None = None,
+        cfg: CameraConfig | dict[str, Any],
     ) -> RealSenseCamera:
-        streams = cfg.get("streams", {})
-        color_cfg = streams.get("color", {})
-        depth_cfg = streams.get("depth", {})
+        if isinstance(cfg, dict):
+            cfg = CameraConfig.model_validate(cfg)
+        color_stream = cfg.streams.get("color")
+        depth_stream = cfg.streams.get("depth")
         return cls(
             name=name,
-            serial_number=cfg.get("serial_number"),
-            width=color_cfg.get("width", 640),
-            height=color_cfg.get("height", 480),
-            fps=color_cfg.get("fps", 30),
-            enable_depth=cfg.get("enable_depth", True),
-            align_depth_to_color=cfg.get("align_depth_to_color", True),
-            depth_width=depth_cfg.get("width"),
-            depth_height=depth_cfg.get("height"),
-            depth_fps=depth_cfg.get("fps"),
-            params=cfg.get("params"),
-            robot_name=robot_name,
+            serial_number=cfg.serial_number,
+            width=color_stream.width if color_stream else 640,
+            height=color_stream.height if color_stream else 480,
+            fps=color_stream.fps if color_stream else 30,
+            enable_depth=cfg.enable_depth,
+            align_depth_to_color=cfg.align_depth_to_color,
+            depth_width=depth_stream.width if depth_stream else None,
+            depth_height=depth_stream.height if depth_stream else None,
+            depth_fps=depth_stream.fps if depth_stream else None,
+            params=cfg.params or None,
         )
 
     @property
@@ -220,6 +219,7 @@ class RealSenseCamera(BaseRGBCamera):
     def _apply_param_to_device(self, key: str, value: Any) -> None:
         rs_opt = _RS_OPTION_MAP.get(key)
         if rs_opt is None:
+            logger.warning("相机 '%s': 未知参数 '%s'，已忽略", self.name, key)
             return
         sensor = self._get_sensor_for_option(key)
         if sensor is None:
@@ -228,8 +228,8 @@ class RealSenseCamera(BaseRGBCamera):
             if isinstance(value, bool):
                 value = 1.0 if value else 0.0
             sensor.set_option(rs_opt, float(value))
-        except RuntimeError:
-            pass  # option not supported by this device
+        except RuntimeError as e:
+            logger.warning("相机 '%s': 设置参数 '%s=%s' 失败: %s", self.name, key, value, e)
 
     def _grab_streams(self) -> dict[str, dict[str, Any]]:
         assert self._pipeline is not None
@@ -242,9 +242,8 @@ class RealSenseCamera(BaseRGBCamera):
 
         color_frame = frames.get_color_frame()
         if color_frame:
-            raw = np.asanyarray(color_frame.get_data())
             streams["color"] = {
-                "data": raw if raw.dtype == np.uint8 else raw.astype(np.uint8),
+                "data": np.asanyarray(color_frame.get_data()),
                 "encoding": "bgr8",
                 "width": color_frame.get_width(),
                 "height": color_frame.get_height(),
@@ -264,41 +263,25 @@ class RealSenseCamera(BaseRGBCamera):
 
         return streams
 
+    def intrinsics(self) -> tuple[np.ndarray, np.ndarray]:
+        """返回当前 color 流的 (K, D)。
 
-class MultiRealSenseManager:
-    """管理多台 RealSense 相机: 批量打开、读取、可视化、关闭。"""
+        K: 3x3 相机内参矩阵 [[fx,0,cx],[0,fy,cy],[0,0,1]]
+        D: 畸变系数 (Brown-Conrady)，长度 5
 
-    def __init__(
-        self,
-        cameras: Sequence[RealSenseCamera] | None = None,
-        config_path: str | Path | None = None,
-    ) -> None:
-        self._cameras: list[RealSenseCamera] = []
-        self._running = False
-
-        if config_path is not None:
-            self._cameras = self._from_config(config_path)
-        if cameras:
-            self._cameras.extend(cameras)
-
-    @staticmethod
-    def _from_config(config_path: str | Path) -> list[RealSenseCamera]:
-        cfg = load_yaml(config_path)
-        cameras_cfg = cfg.get("cameras", {})
-
-        # 支持 dict (name -> config) 和 list 两种格式
-        if isinstance(cameras_cfg, dict):
-            items = cameras_cfg.items()
-        else:
-            items = ((c.get("name", f"cam_{i}"), c) for i, c in enumerate(cameras_cfg))
-
-        cam_list: list[RealSenseCamera] = []
-        for cam_name, cam_cfg in items:
-            if cam_cfg.get("type", "realsense") != "realsense":
-                continue
-            cam = RealSenseCamera._from_config_dict(cam_name, cam_cfg)
-            cam_list.append(cam)
-        return cam_list
+        相机必须先 open()，否则抛出 RuntimeError。
+        """
+        if self._pipeline is None:
+            raise RuntimeError(f"相机 '{self.name}' 未打开，无法获取内参")
+        prof = self._pipeline.get_active_profile()
+        intr = prof.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+        K = np.array([
+            [intr.fx, 0.0, intr.ppx],
+            [0.0, intr.fy, intr.ppy],
+            [0.0, 0.0, 1.0],
+        ])
+        D = np.array(intr.coeffs)
+        return K, D
 
     @staticmethod
     def discover() -> list[dict[str, str]]:
@@ -312,102 +295,3 @@ class MultiRealSenseManager:
             }
             for dev in ctx.query_devices()
         ]
-
-    @classmethod
-    def from_all_connected(
-        cls,
-        enable_depth: bool = True,
-        align_depth_to_color: bool = True,
-        params: dict[str, Any] | None = None,
-    ) -> MultiRealSenseManager:
-        """自动检测所有已连接的 RealSense 相机并创建管理器。"""
-        devices = cls.discover()
-        if not devices:
-            raise RuntimeError("未检测到 RealSense 设备。")
-
-        cameras = [
-            RealSenseCamera(
-                name=f"realsense_{i}",
-                serial_number=dev["serial_number"],
-                enable_depth=enable_depth,
-                align_depth_to_color=align_depth_to_color,
-                params=params,
-            )
-            for i, dev in enumerate(devices)
-        ]
-        return cls(cameras=cameras)
-
-    @property
-    def cameras(self) -> list[RealSenseCamera]:
-        return list(self._cameras)
-
-    def add_camera(self, camera: RealSenseCamera) -> None:
-        self._cameras.append(camera)
-
-    def open_all(self) -> None:
-        for cam in self._cameras:
-            cam.open()
-
-    def close_all(self) -> None:
-        for cam in self._cameras:
-            cam.close()
-
-    def read_all(self) -> dict[str, SensorFrame]:
-        """从每台相机读取一帧。"""
-        return {cam.name: cam.read_frame() for cam in self._cameras if cam.is_open}
-
-    def visualize(self, show_depth: bool = True) -> None:
-        """打开所有相机并在 OpenCV 窗口中显示实时画面。
-
-        按 'q' 或 Esc 退出。
-        """
-        import cv2
-
-        self.open_all()
-        self._running = True
-
-        try:
-            while self._running:
-                for cam in self._cameras:
-                    if not cam.is_open:
-                        continue
-                    frame = cam.read_frame()
-                    streams = frame.payload.get("streams", {})
-                    title = f"{cam.name} ({cam.serial_number})"
-
-                    color_stream = streams.get("color")
-                    if color_stream is not None:
-                        cv2.imshow(f"{title} - Color", color_stream["data"])
-
-                    depth_stream = streams.get("depth")
-                    if show_depth and depth_stream is not None:
-                        depth_colormap = cv2.applyColorMap(
-                            cv2.convertScaleAbs(depth_stream["data"], alpha=0.03),
-                            cv2.COLORMAP_JET,
-                        )
-                        dist = depth_stream.get("center_distance", 0)
-                        cv2.putText(
-                            depth_colormap, f"{dist:.2f}m", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2,
-                        )
-                        cv2.imshow(f"{title} - Depth", depth_colormap)
-
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q")):
-                    break
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self._running = False
-            self.close_all()
-            cv2.destroyAllWindows()
-
-    def stop(self) -> None:
-        self._running = False
-
-    def __enter__(self) -> MultiRealSenseManager:
-        self.open_all()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.close_all()

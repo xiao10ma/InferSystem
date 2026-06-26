@@ -45,7 +45,6 @@ class InferenceClient:
 
     Args:
         server_addr: 服务器地址，如 "192.168.50.225:5555"
-        jpeg_quality: JPEG 压缩质量 (0-100)
         recv_timeout_ms: 接收超时 (ms)，首次推理较慢建议 ≥ 30000
         send_timeout_ms: 发送超时 (ms)
         max_retries: 网络错误自动重试次数
@@ -55,13 +54,11 @@ class InferenceClient:
         self,
         server_addr: str,
         *,
-        jpeg_quality: int = 90,
         recv_timeout_ms: int = 30000,
         send_timeout_ms: int = 5000,
         max_retries: int = 3,
     ) -> None:
         self._server_addr = server_addr
-        self._jpeg_quality = jpeg_quality
         self._recv_timeout_ms = recv_timeout_ms
         self._send_timeout_ms = send_timeout_ms
         self._max_retries = max_retries
@@ -288,9 +285,7 @@ class InferenceClient:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """将观测编码为 msgpack 可序列化的字典。"""
-        state_list = (
-            state.tolist() if isinstance(state, np.ndarray) else list(state)
-        )
+        state_list = np.asarray(state, dtype=np.float32).reshape(-1).tolist()
         payload: dict[str, Any] = {
             "cmd": "predict",
             "state": state_list,
@@ -304,17 +299,16 @@ class InferenceClient:
         if extra:
             payload["extra"] = extra
 
-        # JPEG 压缩图像
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality]
         for cam_name, img_bgr in images.items():
-            if not isinstance(img_bgr, np.ndarray):
-                logger.warning("跳过非 ndarray 图像: %s (type=%s)", cam_name, type(img_bgr).__name__)
-                continue
-            if img_bgr.dtype != np.uint8:
-                img_bgr = img_bgr.astype(np.uint8)
-            ok, buf = cv2.imencode(".jpg", img_bgr, encode_params)
+            img_bgr = np.asarray(img_bgr)
+            # Lossless PNG; low compression keeps latency lower at the cost of bandwidth.
+            ok, encoded = cv2.imencode(
+                ".png",
+                img_bgr,
+                [cv2.IMWRITE_PNG_COMPRESSION, 1],
+            )
             if not ok:
-                raise RuntimeError(f"JPEG 编码失败: {cam_name}")
-            payload[cam_name] = buf.tobytes()
+                raise ValueError(f"PNG 编码失败: {cam_name}")
+            payload[cam_name] = encoded.tobytes()
 
         return payload

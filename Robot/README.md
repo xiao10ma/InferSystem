@@ -275,7 +275,7 @@ robot:
 |------|---------|---------|
 | `move_joint_position()` | act() 循环 + observe() 轮询 | SDK 有原生 MoveJ |
 | `move_eef()` | act() 循环 + observe() 轮询 | SDK 有原生 MoveL |
-| `go_home()` | 调用 move_joint_position(home) | SDK 有原生 Home 指令 |
+| `go_home()` | 调用 move_joint_position(home) | SDK 有原生 Home 指令；Flexiv 当前使用 YAML `home_position_deg` |
 | `move_joint_velocity()` | act() 循环 | 通常不需要覆盖 |
 | `move_joint_torque()` | act() 循环 | 通常不需要覆盖 |
 | `create_gripper()` | 返回 None | 有配套夹爪时覆盖 |

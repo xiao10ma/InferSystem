@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 import sys
 import time
@@ -22,7 +23,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
+
+log = logging.getLogger(__name__)
 
 _shutdown = False
 
@@ -30,11 +34,7 @@ _shutdown = False
 def _sigint_handler(signum, frame):
     global _shutdown
     _shutdown = True
-    print("\n[!] 收到中断信号，正在退出...", flush=True)
-
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
+    log.info("收到中断信号，正在退出...")
 
 
 def _hold_position(robot: BaseRobot, target: list[float], duration: float) -> None:
@@ -57,39 +57,40 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=20.0, help="等待 operational 超时秒数")
     parser.add_argument("--hold", type=float, default=3.0, help="到达 Home 后保持位置的秒数")
     args = parser.parse_args()
+    setup_run_logger(__file__, args.config)
 
     signal.signal(signal.SIGINT, _sigint_handler)
     signal.signal(signal.SIGTERM, _sigint_handler)
 
-    log("[1] 从配置创建机器人...")
+    log.info("[1] 从配置创建机器人...")
     with BaseRobot.from_config(args.config) as robot:
         if robot.is_fault():
-            log("[2] 检测到故障，正在清除...")
+            log.info("[2] 检测到故障，正在清除...")
             robot.clear_fault()
             time.sleep(1.5)
 
         if not robot.is_operational():
-            log("[2] 使能机器人...")
+            log.info("[2] 使能机器人...")
             robot.enable()
             if not robot.wait_until_operational(timeout_s=args.timeout):
                 raise SystemExit("机器人未能在超时时间内变为 operational")
 
-        log(f"[3] 机器人 '{robot.name}' 已 operational (dof={robot.dof})")
+        log.info(f"[3] 机器人 '{robot.name}' 已 operational (dof={robot.dof})")
 
         # SDK 回零轨迹
-        log("[4] 执行 go_home ...")
+        log.info("[4] 执行 go_home ...")
         robot.go_home()
 
         # 读取回零后的位置，持续下发维持姿态
         obs = robot.observe()
         q = obs.joint_positions
-        log(f"[5] go_home 完成, q={[round(v, 4) for v in q[:min(len(q), 7)]]}")
+        log.info(f"[5] go_home 完成, q={[round(v, 4) for v in q[:min(len(q), 7)]]}")
 
         if args.hold > 0 and not _shutdown:
-            log(f"[6] 保持 Home 位置 {args.hold:.1f}s (Ctrl-C 提前退出) ...")
+            log.info(f"[6] 保持 Home 位置 {args.hold:.1f}s (Ctrl-C 提前退出) ...")
             _hold_position(robot, list(q), args.hold)
 
-        log("[7] 完成，断开连接")
+        log.info("[7] 完成，断开连接")
 
 
 if __name__ == "__main__":

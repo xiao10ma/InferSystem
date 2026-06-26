@@ -63,7 +63,6 @@ SensorFrame(
     sensor_name="main_cam",
     sensor_type="rgb_camera",
     timestamp=...,
-    robot_name=...,
     payload={
         "frame_id": 1,
         "streams": {
@@ -94,8 +93,8 @@ from Sensor.rgb_camera.base import BaseRGBCamera
 @BaseRGBCamera.register("usb_camera")
 class USBCamera(BaseRGBCamera):
     @classmethod
-    def _from_config_dict(cls, name, cfg, robot_name=None):
-        return cls(name=name, robot_name=robot_name, ...)
+    def _from_config_dict(cls, name, cfg):
+        return cls(name=name, ...)
 
     def _open_device(self) -> None: ...
     def _close_device(self) -> None: ...

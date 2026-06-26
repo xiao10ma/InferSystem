@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 import sys
 import time
@@ -27,16 +28,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
 
-
-def log(msg: str) -> None:
-    print(msg, flush=True)
+log = logging.getLogger(__name__)
 
 
 def wait_ready(robot: BaseRobot, timeout_s: float) -> None:
     if robot.is_fault():
-        log("  检测到故障，正在 clear_fault ...")
+        log.info("  检测到故障，正在 clear_fault ...")
         robot.clear_fault()
         time.sleep(1.5)
     if not robot.is_operational():
@@ -53,10 +53,10 @@ def _is_bimanual(robot: BaseRobot) -> bool:
 
 
 def test_go_home(robot: BaseRobot) -> None:
-    log("[go_home] 回零 ...")
+    log.info("[go_home] 回零 ...")
     robot.go_home()
     obs = robot.observe()
-    log(f"[go_home] 完成, q[:3]={_fmt(obs.joint_positions[:3])}")
+    log.info(f"[go_home] 完成, q[:3]={_fmt(obs.joint_positions[:3])}")
 
 
 def test_move_joint(robot: BaseRobot, *, amp_deg: float, velocity: float) -> None:
@@ -73,34 +73,34 @@ def test_move_joint(robot: BaseRobot, *, amp_deg: float, velocity: float) -> Non
     if bimanual:
         target[7] = home_q[7] + amp
     label = "左右 joint_0" if bimanual else "joint_0"
-    log(f"[move_joint] {label} +{amp_deg:.1f}deg (velocity={velocity:.2f} rad/s) ...")
+    log.info(f"[move_joint] {label} +{amp_deg:.1f}deg (velocity={velocity:.2f} rad/s) ...")
     ok = robot.move_joint_position(target, velocity=velocity)
     obs = robot.observe()
     q = obs.joint_positions
     if bimanual:
-        log(f"[move_joint] 到达={ok}, left_j0={q[0]:.4f}, right_j0={q[7]:.4f}")
+        log.info(f"[move_joint] 到达={ok}, left_j0={q[0]:.4f}, right_j0={q[7]:.4f}")
     else:
-        log(f"[move_joint] 到达={ok}, j0={q[0]:.4f}")
+        log.info(f"[move_joint] 到达={ok}, j0={q[0]:.4f}")
 
     # 反向
     target[0] = home_q[0] - amp
     if bimanual:
         target[7] = home_q[7] - amp
-    log(f"[move_joint] {label} -{amp_deg:.1f}deg ...")
+    log.info(f"[move_joint] {label} -{amp_deg:.1f}deg ...")
     ok = robot.move_joint_position(target, velocity=velocity)
     obs = robot.observe()
     q = obs.joint_positions
     if bimanual:
-        log(f"[move_joint] 到达={ok}, left_j0={q[0]:.4f}, right_j0={q[7]:.4f}")
+        log.info(f"[move_joint] 到达={ok}, left_j0={q[0]:.4f}, right_j0={q[7]:.4f}")
     else:
-        log(f"[move_joint] 到达={ok}, j0={q[0]:.4f}")
+        log.info(f"[move_joint] 到达={ok}, j0={q[0]:.4f}")
 
     # 回原位
     target[0] = home_q[0]
     if bimanual:
         target[7] = home_q[7]
     robot.move_joint_position(target, velocity=velocity)
-    log("[move_joint] 回原位完成")
+    log.info("[move_joint] 回原位完成")
 
 
 def test_cartesian(robot: BaseRobot, *, delta_m: float, velocity: float) -> None:
@@ -117,7 +117,7 @@ def test_cartesian(robot: BaseRobot, *, delta_m: float, velocity: float) -> None
         left_pose7 = _pose6d_to_pose7(left_eef.pose_6d().tolist())
         right_pose7 = _pose6d_to_pose7(right_eef.pose_6d().tolist())
         if not left_pose7 or not right_pose7:
-            log("[cartesian] 无法获取末端位姿，跳过")
+            log.info("[cartesian] 无法获取末端位姿，跳过")
             return
         q14 = obs.joint_positions
         base = left_pose7 + [q14[6]] + right_pose7 + [q14[13]]
@@ -126,27 +126,27 @@ def test_cartesian(robot: BaseRobot, *, delta_m: float, velocity: float) -> None
         fwd = list(base)
         fwd[0] += delta_m   # 左臂 x
         fwd[8] += delta_m   # 右臂 x
-        log(f"[cartesian] 左右臂 x +{delta_m * 1000:.1f}mm ...")
+        log.info(f"[cartesian] 左右臂 x +{delta_m * 1000:.1f}mm ...")
         _stream_cartesian(robot, base, fwd, velocity=velocity)
 
         # 回原位
         _stream_cartesian(robot, fwd, base, velocity=velocity)
-        log("[cartesian] 回原位完成")
+        log.info("[cartesian] 回原位完成")
     else:
         eef_pose = obs.eef_pose
         if len(eef_pose) < 7:
-            log("[cartesian] 无法获取末端位姿，跳过")
+            log.info("[cartesian] 无法获取末端位姿，跳过")
             return
         gripper_now = obs.joint_positions[robot.dof]
         base = list(eef_pose[:7]) + [gripper_now]
 
         fwd = list(base)
         fwd[0] += delta_m
-        log(f"[cartesian] x +{delta_m * 1000:.1f}mm ...")
+        log.info(f"[cartesian] x +{delta_m * 1000:.1f}mm ...")
         _stream_cartesian(robot, base, fwd, velocity=velocity)
 
         _stream_cartesian(robot, fwd, base, velocity=velocity)
-        log("[cartesian] 回原位完成")
+        log.info("[cartesian] 回原位完成")
 
 
 def _stream_cartesian(
@@ -192,30 +192,30 @@ def test_gripper(robot: BaseRobot, *, hold_s: float) -> None:
         p = robot.get_params()
         lg_max, rg_max = p.joint_position_max[6], p.joint_position_max[13]
 
-        log(f"[gripper] 双臂张开 (left={lg_max:.3f}m, right={rg_max:.3f}m) ...")
+        log.info(f"[gripper] 双臂张开 (left={lg_max:.3f}m, right={rg_max:.3f}m) ...")
         cmd = list(q)
         cmd[6], cmd[13] = lg_max, rg_max
         _hold_action(robot, cmd, hold_s)
 
-        log("[gripper] 双臂闭合 ...")
+        log.info("[gripper] 双臂闭合 ...")
         cmd[6], cmd[13] = 0.0, 0.0
         _hold_action(robot, cmd, hold_s)
-        log("[gripper] 完成")
+        log.info("[gripper] 完成")
     else:
         enable_gripper = getattr(robot, "_enable_gripper", False)
         if not enable_gripper:
-            log("[gripper] enable_gripper=false, 跳过夹爪测试")
+            log.info("[gripper] enable_gripper=false, 跳过夹爪测试")
             return
         gripper_width = getattr(robot, "_gripper_width", 0.08)
 
-        log(f"[gripper] 张开 ({gripper_width:.3f}m) ...")
+        log.info(f"[gripper] 张开 ({gripper_width:.3f}m) ...")
         cmd = q[:6] + [gripper_width]
         _hold_action(robot, cmd, hold_s)
 
-        log("[gripper] 闭合 ...")
+        log.info("[gripper] 闭合 ...")
         cmd = q[:6] + [0.0]
         _hold_action(robot, cmd, hold_s)
-        log("[gripper] 完成")
+        log.info("[gripper] 完成")
 
 
 def _hold_action(robot: BaseRobot, cmd: list[float], duration: float) -> None:
@@ -246,12 +246,13 @@ def main() -> None:
     parser.add_argument("--hold", type=float, default=1.0, help="夹爪保持时间 (秒)")
     parser.add_argument("--timeout", type=float, default=20.0, help="等待 operational 超时秒数")
     args = parser.parse_args()
+    setup_run_logger(__file__, args.config)
     skip = set(args.skip)
 
-    log(f"[init] 配置: {args.config}")
+    log.info(f"[init] 配置: {args.config}")
     with BaseRobot.from_config(args.config) as robot:
         wait_ready(robot, args.timeout)
-        log(f"[init] 机器人 '{robot.name}' 已就绪 (dof={robot.dof})")
+        log.info(f"[init] 机器人 '{robot.name}' 已就绪 (dof={robot.dof})")
 
         if "home" not in skip:
             test_go_home(robot)
@@ -265,7 +266,7 @@ def main() -> None:
         if "gripper" not in skip:
             test_gripper(robot, hold_s=args.hold)
 
-        log("[done] 所有测试完成")
+        log.info("[done] 所有测试完成")
 
 
 if __name__ == "__main__":

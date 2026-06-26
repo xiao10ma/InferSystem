@@ -1,7 +1,7 @@
 # ============================================================
-# ARX5 双臂推理示例配置
-# 14 维状态/动作顺序:
-# [left_joint_0..5, left_gripper, right_joint_0..5, right_gripper]
+# ARX5 双臂推理配置
+# joint action: [Lj0..Lj5, Lg, Rj0..Rj5, Rg]
+# eef action:   [left xyz+rot6d+g, right xyz+rot6d+g]
 # ============================================================
 
 robot:
@@ -10,7 +10,7 @@ robot:
 
   left_arm:
     model: X5
-    interface: can0             
+    interface: can0
     canable_serial: "2070339D5743"
 
   right_arm:
@@ -20,30 +20,26 @@ robot:
 
   control:
     background_send_recv: true
-    frequency_hz: 500
     controller_dt: 0.002
-    over_current_cnt_max: 5000       # 允许更多瞬态过流计数，防止误杀 (500Hz下=10秒)
+    over_current_cnt_max: 5000
     log_level: INFO
+
     enable_gripper: true
-    gripper_kp: 1.5              # gripper PD 增益 (SDK 默认 5.0)
+    gripper_kp: 1.5
     gripper_kd: 0.1
-    gripper_closed_slack: 0.01    # 允许 gripper 指令最低到 -0.01
-
-    # gripper position clamp (meter)；会与 gripper_closed_slack 合并允许略负读数/指令
-    left_gripper_min: -0.0      # 夹紧时编码器可能略低于 0
-    left_gripper_max: 0.0822      # 与 SDK X5 gripper_width 一致
+    gripper_closed_slack: 0.01
+    left_gripper_min: -0.0
+    left_gripper_max: 0.0822
     right_gripper_min: -0.0
-    right_gripper_max: 0.0822     # 与 SDK X5 gripper_width 一致
+    right_gripper_max: 0.0822
 
-    # 二值夹爪控制: action 位置值经阈值判断后 snap 到两端极限，让电机顶到底施最大力
     gripper_binary: false
-    gripper_binary_threshold: 0.02  # 单位 m；小于此值 -> -0.01（夹紧），否则 -> 0.082（张开）
-    gripper_binary_close: -0.000     # 夹紧目标，顶到底保证最大抓力
+    gripper_binary_threshold: 0.02
+    gripper_binary_close: -0.0
 
-    # 可选：14 维 home 目标（默认全 0）
-    # home_position_deg_14: [0,0,0,0,0,0, 0, 0,0,0,0,0,0, 0]
+    # 可选: 14 维 home 目标，格式同 joint action。
+    # home_position_deg_14: [0,0,0,0,0,0,0, 0,0,0,0,0,0,0]
 
-  # 可选：两臂共用关节限位（单位度/弧度系数）
   joint_limits:
     position_min_deg: [-179.9, -2.9, -5.7, -91.7, -90.0, -114.6]
     position_max_deg: [150.0, 200.5, 183.3, 88.8, 90.0, 114.6]
@@ -57,65 +53,63 @@ cameras:
     serial_number: "346522070312"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
 
   hand_left:
     type: realsense
     serial_number: "409122274673"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
 
   hand_right:
     type: realsense
     serial_number: "409122273847"
     enable_depth: false
     streams:
-      color:
-        width: 640
-        height: 480
-        fps: 30
-        encoding: bgr8
+      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
 
 inference:
   server: "192.168.50.142:5555"
+  recv_timeout_ms: 30000
   fps: 30
-  jpeg_quality: 90
   n_execute: 50
-  enabled_cameras:
-    - top_head
-    - hand_left
-    - hand_right
+  enabled_cameras: [top_head, hand_left, hand_right]
 
-  # 双臂 14 维 joint 输出（包含两侧 gripper）
+  # 改成 cartesian 即使用双臂 EEF 控制；每臂 10 维:
+  # [x,y,z,R00,R10,R20,R01,R11,R21,gripper]。
   action_space: joint_position
+  policy_format: normal  # canonical 仅支持 action_space: cartesian。
+  canonical_dim: 32
   arm_dim: 14
   gripper_index: -1
-  gripper_mode: binary                  # 可改为 binary_move
-  gripper_threshold: 0.04               # 开/合判断阈值
 
-  # 推理起始位置 (从训练数据统计的各 episode 起始姿态均值)
-  # 格式: [Lj0..Lj5, Lg, Rj0..Rj5, Rg] (14维, 弧度)
+  gripper_mode: binary
+  gripper_threshold: 0.04
+
+  latency_compensation: true
+  smooth:
+    enabled: false
+    overlap_steps: 8
+
+  max_joint_delta_rad: 0.5
+  max_eef_delta_m: 0.10
+  max_eef_rotation_delta_rad: 0.8
+  max_joint_velocity_rad_s: 1.2
+
+  # 推理起始位置，格式: [Lj0..Lj5, Lg, Rj0..Rj5, Rg]。
   inference_home:
-    - -0.001   # Lj0
-    - 0.950    # Lj1
-    - 0.842    # Lj2
-    - -0.578   # Lj3
-    - 0.002    # Lj4
-    - -0.010   # Lj5
-    - 0.082    # Lg
-    - -0.003   # Rj0
-    - 0.863    # Rj1
-    - 0.777    # Rj2
-    - -0.523   # Rj3
-    - -0.005   # Rj4
-    - 0.004    # Rj5
-    - 0.075    # Rg
+    - -0.001
+    - 0.950
+    - 0.842
+    - -0.578
+    - 0.002
+    - -0.010
+    - 0.082
+    - -0.003
+    - 0.863
+    - 0.777
+    - -0.523
+    - -0.005
+    - 0.004
+    - 0.075

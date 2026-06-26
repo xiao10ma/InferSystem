@@ -10,8 +10,10 @@ from typing import Any
 import numpy as np
 
 from Core import Action, ActionSpace, ArmState, RobotParams
+from Core.config_schema import Arx5BimanualRobotConfig
 from Robot.arx5 import (
     GRIPPER_CLOSED_SLACK_DEFAULT_M,
+    _pose6d_to_pose7,
     _pose7_to_pose6d,
     apply_robot_config_overrides,
     infer_gripper_sdk_sign,
@@ -41,96 +43,71 @@ class Arx5BimanualRobot(BaseRobot):
         name: str | None = None,
         use_background_send_recv: bool = True,
         log_level: str = "INFO",
-        params: RobotParams,
         ctrl_cfg: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(name=name or "arx5_bimanual", robot_type="arx5_bimanual", dof=params.dof)
+        super().__init__(name=name or "arx5_bimanual", robot_type="arx5_bimanual", dof=14)
         self._left_model = left_model
         self._left_interface = left_interface
         self._right_model = right_model
         self._right_interface = right_interface
         self._use_background_send_recv = use_background_send_recv
         self._log_level_name = log_level.upper()
-        self._params = params
         self._ctrl_cfg = ctrl_cfg or {}
 
         self._enable_gripper = bool(self._ctrl_cfg.get("enable_gripper", True))
         self._flip_gripper_sign = bool(self._ctrl_cfg.get("flip_gripper_sign", False))
-        # (left_kp, right_kp) / (left_kd, right_kd)，右臂可单独覆盖
-        self._gripper_kp = (
-            float(self._ctrl_cfg.get("gripper_kp", 4.0)),
-            float(self._ctrl_cfg.get("right_gripper_kp", self._ctrl_cfg.get("gripper_kp", 4.0))),
-        )
-        self._gripper_kd = (
-            float(self._ctrl_cfg.get("gripper_kd", 0.24)),
-            float(self._ctrl_cfg.get("right_gripper_kd", self._ctrl_cfg.get("gripper_kd", 0.24))),
-        )
+        # (left_kp, right_kp) / (left_kd, right_kd)，右臂可单独覆盖；默认值与 SDK 一致
+        kp = float(self._ctrl_cfg.get("gripper_kp", 5.0))
+        kd = float(self._ctrl_cfg.get("gripper_kd", 0.2))
+        self._gripper_kp = (kp, float(self._ctrl_cfg.get("right_gripper_kp", kp)))
+        self._gripper_kd = (kd, float(self._ctrl_cfg.get("right_gripper_kd", kd)))
 
         self._arx5: Any | None = None
         self._ctrls: tuple[Any, Any] | None = None  # (left_ctrl, right_ctrl)
         self._solvers: tuple[Any, Any] | None = None  # (left_solver, right_solver) 用于 CARTESIAN IK
         self._connected = False
-        # connect 后按各臂 gripper_open_readout / YAML 覆盖刷新，与 Arx5Robot 一致
         self._gripper_sdk_sign: tuple[int, int] = (1, 1)
         # 二值夹爪: action 位置值经阈值判断后 snap 到 close/open 极限
         self._gripper_binary = bool(self._ctrl_cfg.get("gripper_binary", False))
         self._gripper_binary_threshold = float(self._ctrl_cfg.get("gripper_binary_threshold", 0.04))
         self._gripper_binary_close = float(self._ctrl_cfg.get("gripper_binary_close", -0.0))
 
+        # 占位参数 — connect() 后由 _sync_params_from_sdk 用 SDK 真实值覆盖
+        home_deg = self._ctrl_cfg.get("home_position_deg_14") or [0.0] * 14
+        self._params = RobotParams(
+            dof=14,
+            joint_position_min=[-math.pi] * 14,
+            joint_position_max=[math.pi] * 14,
+            joint_velocity_max=[5.0] * 14,
+            joint_acceleration_max=[3.0] * 14,
+            joint_torque_max=[30.0] * 14,
+            gripper=None,
+            home_position=[math.radians(v) for v in home_deg],
+            control_frequency_hz=1.0 / float(self._ctrl_cfg.get("controller_dt", 0.002)),
+        )
+
     # ── 工厂 ──────────────────────────────────────────────────
 
     @classmethod
-    def _from_config_dict(cls, robot_cfg: dict[str, Any]) -> Arx5BimanualRobot:
-        """从 YAML robot: 段创建实例，读取 left_arm / right_arm / control 配置。"""
-        left_cfg = robot_cfg.get("left_arm", {})
-        right_cfg = robot_cfg.get("right_arm", {})
-        control_cfg = robot_cfg.get("control", {})
-        merged = dict(control_cfg)
-        if "joint_limits" in robot_cfg and "joint_limits" not in merged:
-            merged["joint_limits"] = robot_cfg["joint_limits"]
+    def _from_config_dict(cls, robot_cfg: Arx5BimanualRobotConfig | dict[str, Any]) -> Arx5BimanualRobot:
+        """从 typed config 创建实例。也兼容旧的 dict 调用路径。"""
+        if isinstance(robot_cfg, dict):
+            robot_cfg = Arx5BimanualRobotConfig.model_validate(robot_cfg)
+
+        ctrl = robot_cfg.control
+        merged = ctrl.model_dump(exclude_none=True)
+        if robot_cfg.joint_limits:
+            merged["joint_limits"] = robot_cfg.joint_limits.model_dump(exclude_none=True)
+
         return cls(
-            left_model=left_cfg.get("model", "X5"),
-            left_interface=left_cfg.get("interface_name", left_cfg.get("interface", "can0")),
-            right_model=right_cfg.get("model", "X5"),
-            right_interface=right_cfg.get("interface_name", right_cfg.get("interface", "can1")),
-            name=robot_cfg.get("name"),
-            use_background_send_recv=bool(control_cfg.get("background_send_recv", True)),
-            log_level=control_cfg.get("log_level", "INFO"),
-            params=cls._build_params(robot_cfg),
+            left_model=robot_cfg.left_arm.model,
+            left_interface=robot_cfg.left_arm.resolved_interface,
+            right_model=robot_cfg.right_arm.model,
+            right_interface=robot_cfg.right_arm.resolved_interface,
+            name=robot_cfg.name,
+            use_background_send_recv=ctrl.background_send_recv,
+            log_level=ctrl.log_level,
             ctrl_cfg=merged,
-        )
-
-    @classmethod
-    def _build_params(cls, robot_cfg: dict[str, Any]) -> RobotParams:
-        """从 YAML 构建 14 维 RobotParams（connect 后会被 SDK 实际值覆盖）。
-
-        布局: [left_6joints, left_gripper, right_6joints, right_gripper]
-        两臂共用同一组关节限位，gripper 范围从 control 段读取。
-        """
-        ctrl = robot_cfg.get("control", {})
-        lim = robot_cfg.get("joint_limits", {})
-        min_deg = lim.get("position_min_deg", [-180.0] * 6)
-        max_deg = lim.get("position_max_deg", [180.0] * 6)
-        vel = [float(v) for v in lim.get("velocity_max", [2.0] * 6)]
-        acc = [float(v) for v in lim.get("acceleration_max", [3.0] * 6)]
-        tau = [float(v) for v in lim.get("torque_max", [30.0] * 6)]
-        jmin = [math.radians(float(v)) for v in min_deg]
-        jmax = [math.radians(float(v)) for v in max_deg]
-        slack = float(ctrl.get("gripper_closed_slack", GRIPPER_CLOSED_SLACK_DEFAULT_M))
-        lg_min = min(float(ctrl.get("left_gripper_min", -slack)), -slack)
-        lg_max = float(ctrl.get("left_gripper_max", 0.2))
-        rg_min = min(float(ctrl.get("right_gripper_min", -slack)), -slack)
-        rg_max = float(ctrl.get("right_gripper_max", 0.2))
-        return RobotParams(
-            dof=14,
-            joint_position_min=jmin + [lg_min] + jmin + [rg_min],
-            joint_position_max=jmax + [lg_max] + jmax + [rg_max],
-            joint_velocity_max=vel + [1.0] + vel + [1.0],
-            joint_acceleration_max=acc + [1.0] + acc + [1.0],
-            joint_torque_max=tau + [1.0] + tau + [1.0],
-            gripper=None,
-            home_position=[math.radians(float(v)) for v in ctrl.get("home_position_deg_14", [0.0] * 14)],
-            control_frequency_hz=float(ctrl.get("frequency_hz", 500.0)),
         )
 
     # ── 生命周期 ──────────────────────────────────────────────
@@ -244,6 +221,20 @@ class Arx5BimanualRobot(BaseRobot):
         dq14[13] *= rs
         tau14[6] *= ls
         tau14[13] *= rs
+        try:
+            left_eef, right_eef = _run_dual(
+                lambda: self._ctrls[0].get_eef_state(),
+                lambda: self._ctrls[1].get_eef_state(),
+                timeout=_GET_STATE_TIMEOUT_S,
+                err_msg="get_eef_state timeout: ARX5 arm communication blocked",
+            )
+            eef_pose = (
+                _pose6d_to_pose7(left_eef.pose_6d().tolist())
+                + _pose6d_to_pose7(right_eef.pose_6d().tolist())
+            )
+        except Exception:
+            logger.debug("ARX5 双臂 get_eef_state() 异常，eef_pose 置空", exc_info=True)
+            eef_pose = []
         return ArmState(
             timestamp=time.perf_counter(),
             joint_positions=q14,
@@ -251,7 +242,7 @@ class Arx5BimanualRobot(BaseRobot):
             joint_torques=tau14,
             joint_external_torques=[],
             joint_positions_desired=[],
-            eef_pose=[],
+            eef_pose=eef_pose,
             eef_velocity=[],
             wrench_in_tcp=[],
             wrench_in_world=[],
@@ -280,7 +271,7 @@ class Arx5BimanualRobot(BaseRobot):
     ) -> bool:
         """smoothstep 插值规划移动到目标 14 维关节位置（含 gripper）。
 
-        以 YAML control.frequency_hz 为插值步进频率，使用 smoothstep (3t²−2t³) 插值，
+        以 SDK controller_dt 对应的频率为插值步进频率，使用 smoothstep (3t²−2t³) 插值，
         起止速度为零，避免阶跃冲击。距离很近时直接下发目标，由 PD 控制收敛。
         duration 由纯关节（排除 gripper index 6/13）的最大位移 / velocity 决定。
         """
@@ -489,10 +480,9 @@ class Arx5BimanualRobot(BaseRobot):
         return result[0]
 
     def _sync_params_from_sdk(self) -> None:
-        """用 SDK 返回的实际硬件参数覆盖 YAML 初始值。
+        """用 SDK 实际硬件参数构建 RobotParams — SDK 是硬件参数的唯一真实来源。
 
-        分别读取左右臂的关节限位和 gripper_width，组合为 14 维 RobotParams。
-        gripper 规范范围默认约 [-slack, gripper_width]（slack 见 gripper_closed_slack），可通过 left/right_gripper_min 覆盖。
+        gripper 范围: [-slack, gripper_width]，slack 由配置提供（Python 层概念，SDK 无此字段）。
         """
         left_rc = self._ctrls[0].get_robot_config()
         right_rc = self._ctrls[1].get_robot_config()
@@ -502,11 +492,7 @@ class Arx5BimanualRobot(BaseRobot):
         ls = infer_gripper_sdk_sign(left_rc, self._ctrl_cfg, arm="left")
         rs = infer_gripper_sdk_sign(right_rc, self._ctrl_cfg, arm="right")
         self._gripper_sdk_sign = (ls, rs)
-        logger.info(
-            "ARX5 双臂 gripper readout_sign: left=%d right=%d (默认 1；仅当显式 YAML 时才翻转；open_readout 由 SDK 换算)",
-            ls,
-            rs,
-        )
+        logger.info("ARX5 双臂 gripper readout_sign: left=%d right=%d", ls, rs)
 
         def _arm_limits(rc: Any) -> tuple[list[float], list[float], list[float], list[float], float]:
             return (
@@ -520,16 +506,12 @@ class Arx5BimanualRobot(BaseRobot):
         l_min, l_max, l_vel, l_tau, l_gw = _arm_limits(left_rc)
         r_min, r_max, r_vel, r_tau, r_gw = _arm_limits(right_rc)
         slack = float(self._ctrl_cfg.get("gripper_closed_slack", GRIPPER_CLOSED_SLACK_DEFAULT_M))
-        lg_min = min(float(self._ctrl_cfg.get("left_gripper_min", -slack)), -slack)
-        lg_max = float(self._ctrl_cfg.get("left_gripper_max", l_gw))
-        rg_min = min(float(self._ctrl_cfg.get("right_gripper_min", -slack)), -slack)
-        rg_max = float(self._ctrl_cfg.get("right_gripper_max", r_gw))
         dt = max(float(left_cc.controller_dt), float(right_cc.controller_dt))
 
         self._params = RobotParams(
             dof=14,
-            joint_position_min=l_min + [lg_min] + r_min + [rg_min],
-            joint_position_max=l_max + [lg_max] + r_max + [rg_max],
+            joint_position_min=l_min + [-slack] + r_min + [-slack],
+            joint_position_max=l_max + [l_gw] + r_max + [r_gw],
             joint_velocity_max=l_vel + [1.0] + r_vel + [1.0],
             joint_acceleration_max=[3.0] * 14,
             joint_torque_max=l_tau + [1.0] + r_tau + [1.0],
@@ -537,7 +519,6 @@ class Arx5BimanualRobot(BaseRobot):
             home_position=self._params.home_position or [0.0] * 14,
             control_frequency_hz=1.0 / dt,
         )
-        self.dof = 14
 
     def _apply_gripper_gains(self) -> None:
         """为左右臂设置 gripper PD 增益：禁用时清零，启用时补齐 SDK 默认值为 0 的情况。"""

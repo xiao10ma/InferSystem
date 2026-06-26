@@ -23,7 +23,6 @@ class SensorFrame:
     sensor_name: str
     sensor_type: str          # "rgb_camera" | "tactile" | ...
     timestamp: datetime
-    robot_name: str | None
     payload: dict[str, Any]   # 传感器特定数据，图像在 payload["streams"][stream_name]["data"]
 ```
 

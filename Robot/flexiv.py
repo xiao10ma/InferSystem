@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from Core import Action, ActionSpace, ArmState, GripperParams, RobotParams
+from Core.config_schema import FlexivRobotConfig
 from Robot.base import BaseRobot
 from Robot.gripper import BaseGripper, GripperState
 
@@ -42,22 +43,30 @@ class FlexivGripper(BaseGripper):
         self._connected = False
 
         # 默认参数
-        self._default_velocity: float = self._config.get("default_velocity", 0.1)
-        self._default_force: float = self._config.get("default_force", 30.0)
-        self._max_width: float = self._config.get("max_width", 0.09)
+        self._default_velocity: float = self._config.get("default_velocity", 0.2)
+        self._default_force: float = self._config.get("default_force", 20.0)
+        self._max_width: float = self._config.get("max_width", 0.085)
 
     def connect(self) -> None:
         if self._connected:
+            logger.info("夹爪已连接: %s", self.name or "(默认)")
             return
         self._gripper = self._rdk.Gripper(self._robot_handle)
         if self.name:
             self._gripper.Enable(self.name)
             tool = self._rdk.Tool(self._robot_handle)
             tool.Switch(self.name)
-        self._gripper.Init()
-        self._wait_init()
+        self._gripper.Move(
+            self._max_width,
+            self._default_velocity,
+            self._default_force,
+        )
+        self._wait_done()
         self._connected = True
-        logger.info("夹爪已初始化: %s", self.name or "(默认)")
+        logger.info(
+            "夹爪已连接并打开到最大宽度: %s width=%.4fm",
+            self.name or "(默认)", self._max_width,
+        )
 
     def disconnect(self) -> None:
         self._connected = False
@@ -106,19 +115,6 @@ class FlexivGripper(BaseGripper):
         if not self._connected or self._gripper is None:
             raise RuntimeError("夹爪尚未连接，请先调用 connect()")
 
-    def _wait_init(self, timeout_s: float = 5.0) -> None:
-        """等待夹爪初始化完成。"""
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            try:
-                gs = self._gripper.states()
-                if not gs.is_moving:
-                    return
-            except Exception:
-                pass
-            time.sleep(0.2)
-        logger.warning("夹爪初始化等待超时 (%.1fs)，继续执行", timeout_s)
-
     def _wait_done(self, timeout_s: float = 10.0) -> None:
         """等待夹爪运动完成。"""
         time.sleep(0.3)
@@ -146,7 +142,7 @@ class FlexivRobot(BaseRobot):
     任务层 (覆盖基类默认实现，使用 Flexiv Primitive 更高效):
       move_joint_position()  → ExecutePrimitive("MoveJ")
       move_eef()             → ExecutePrimitive("MoveL")
-      go_home()              → ExecutePrimitive("Home")
+      go_home()              → MoveJ 到 YAML 配置的 home_position_deg
     """
 
     # ── Rizon4 默认硬件参数 ───────────────────────────────────
@@ -159,10 +155,10 @@ class FlexivRobot(BaseRobot):
         joint_acceleration_max=[3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
         joint_torque_max=[100.0, 100.0, 50.0, 50.0, 20.0, 20.0, 20.0],
         gripper=GripperParams(
-            max_width=0.1,
+            max_width=0.085,
             min_width=0.0,
             max_velocity=0.2,
-            max_force=30.0,
+            max_force=20.0,
         ),
         home_position=[0.0, -0.3491, 0.0, 1.5708, 0.0, 0.3491, 0.0],
         control_frequency_hz=1000.0,
@@ -205,13 +201,11 @@ class FlexivRobot(BaseRobot):
         verbose: bool = True,
         lite: bool = False,
         robot_handle: Any | None = None,
-        rdk_module: Any | None = None,
         params: RobotParams | None = None,
         gripper_config: dict[str, Any] | None = None,
         control_config: dict[str, Any] | None = None,
     ) -> None:
-        if rdk_module is None:
-            import flexivrdk as rdk_module  # type: ignore[no-redef]
+        import flexivrdk as rdk_module  # type: ignore[no-redef]
 
         self.serial_number = serial_number
         self._rdk = rdk_module
@@ -240,71 +234,71 @@ class FlexivRobot(BaseRobot):
             dof=self._params.dof,
         )
 
-    # ── 从 config dict 创建 ──
+    # ── 从 config 创建 ──
 
     @classmethod
-    def _from_config_dict(cls, robot_cfg: dict[str, Any]) -> FlexivRobot:
-        """从 YAML robot: 段创建 FlexivRobot。"""
+    def _from_config_dict(cls, robot_cfg: FlexivRobotConfig | dict[str, Any]) -> FlexivRobot:
+        """从 typed config 创建 FlexivRobot。也兼容旧的 dict 调用路径。"""
+        if isinstance(robot_cfg, dict):
+            robot_cfg = FlexivRobotConfig.model_validate(robot_cfg)
+
         return cls(
-            serial_number=robot_cfg["serial_number"],
-            name=robot_cfg.get("name"),
-            network_interface_whitelist=robot_cfg.get("network_interface_whitelist"),
-            verbose=robot_cfg.get("verbose", True),
-            lite=robot_cfg.get("lite", False),
+            serial_number=robot_cfg.serial_number,
+            name=robot_cfg.name,
+            network_interface_whitelist=robot_cfg.network_interface_whitelist,
+            verbose=robot_cfg.verbose,
+            lite=robot_cfg.lite,
             params=cls._build_params(robot_cfg),
-            gripper_config=robot_cfg.get("gripper", {}),
-            control_config=robot_cfg.get("control", {}),
+            gripper_config=robot_cfg.gripper.model_dump(),
+            control_config=robot_cfg.control.model_dump(),
         )
 
     @classmethod
-    def _build_params(cls, robot_cfg: dict[str, Any]) -> RobotParams:
-        """从 YAML 构建 RobotParams，缺省字段使用默认值。"""
+    def _build_params(cls, cfg: FlexivRobotConfig) -> RobotParams:
+        """从 typed config 构建 RobotParams，缺省字段使用默认值。"""
         default = cls._DEFAULT_PARAMS
-        gripper_cfg = robot_cfg.get("gripper", {})
-        control_cfg = robot_cfg.get("control", {})
-        limits_cfg = robot_cfg.get("joint_limits", {})
+        g = cfg.gripper
+        ctrl = cfg.control
+        lim = cfg.joint_limits
 
         gripper = GripperParams(
-            max_width=gripper_cfg.get("max_width", default.gripper.max_width),
-            min_width=gripper_cfg.get("min_width", default.gripper.min_width),
-            max_velocity=gripper_cfg.get("max_velocity", default.gripper.max_velocity),
-            max_force=gripper_cfg.get("max_force", default.gripper.max_force),
+            max_width=g.max_width,
+            min_width=g.min_width,
+            max_velocity=g.max_velocity,
+            max_force=g.max_force,
         ) if default.gripper else None
 
-        home_deg = control_cfg.get("home_position_deg")
         home_rad = (
-            [math.radians(d) for d in home_deg]
-            if home_deg is not None
+            [math.radians(d) for d in ctrl.home_position_deg]
+            if ctrl.home_position_deg is not None
             else list(default.home_position)
         )
-
-        pos_min_deg = limits_cfg.get("position_min_deg")
-        pos_max_deg = limits_cfg.get("position_max_deg")
 
         return RobotParams(
             dof=default.dof,
             joint_position_min=(
-                [math.radians(d) for d in pos_min_deg]
-                if pos_min_deg else list(default.joint_position_min)
+                [math.radians(d) for d in lim.position_min_deg]
+                if lim and lim.position_min_deg else list(default.joint_position_min)
             ),
             joint_position_max=(
-                [math.radians(d) for d in pos_max_deg]
-                if pos_max_deg else list(default.joint_position_max)
+                [math.radians(d) for d in lim.position_max_deg]
+                if lim and lim.position_max_deg else list(default.joint_position_max)
             ),
-            joint_velocity_max=limits_cfg.get(
-                "velocity_max", list(default.joint_velocity_max),
+            joint_velocity_max=(
+                list(lim.velocity_max) if lim and lim.velocity_max
+                else list(default.joint_velocity_max)
             ),
-            joint_acceleration_max=limits_cfg.get(
-                "acceleration_max", list(default.joint_acceleration_max),
+            joint_acceleration_max=(
+                list(lim.acceleration_max) if lim and lim.acceleration_max
+                else list(default.joint_acceleration_max)
             ),
-            joint_torque_max=limits_cfg.get(
-                "torque_max", list(default.joint_torque_max),
+            joint_torque_max=(
+                list(lim.torque_max) if lim and lim.torque_max
+                else list(default.joint_torque_max)
             ),
             gripper=gripper,
             home_position=home_rad,
-            control_frequency_hz=control_cfg.get(
-                "frequency_hz", default.control_frequency_hz,
-            ),
+            control_frequency_hz=ctrl.frequency_hz,
         )
 
     # ================================================================
@@ -322,6 +316,12 @@ class FlexivRobot(BaseRobot):
                 self._network_interface_whitelist,
                 self._verbose,
                 self._lite,
+            )
+        # 验证实际连接
+        if not self._robot.connected():
+            self._robot = None
+            raise RuntimeError(
+                f"无法连接到机器人 '{self.name}' (SN={self.serial_number})，请检查网络和电源"
             )
         # 从硬件读取实际 DOF
         info = self._robot.info()
@@ -501,7 +501,6 @@ class FlexivRobot(BaseRobot):
         positions: Sequence[float],
         *,
         velocity: float | None = None,
-        tolerance: float = 0.01,
         timeout_s: float = 30.0,
     ) -> bool:
         self._require_connected()
@@ -511,7 +510,9 @@ class FlexivRobot(BaseRobot):
         self._ensure_mode("NRT_PRIMITIVE_EXECUTION")
         if velocity is not None:
             self._robot.SetVelocityScale(_to_scale(velocity))
-        jpos = self._rdk.JPos(list(positions))
+        # Flexiv NRT_PRIMITIVE_EXECUTION MoveJ expects joint targets in degrees.
+        # Keep the public/internal API in radians and convert only at the RDK boundary.
+        jpos = self._rdk.JPos([math.degrees(v) for v in positions])
         self._robot.ExecutePrimitive("MoveJ", {"target": jpos}, True)
         return self._wait_primitive_done(timeout_s)
 
@@ -521,7 +522,7 @@ class FlexivRobot(BaseRobot):
         orientation: Sequence[float] | None = None,
         *,
         velocity: float | None = None,
-        tolerance: float = 0.005,
+
         timeout_s: float = 30.0,
     ) -> bool:
         self._require_connected()
@@ -542,14 +543,17 @@ class FlexivRobot(BaseRobot):
         return self._wait_primitive_done(timeout_s)
 
     def go_home(self, *, velocity: float | None = None, timeout_s: float = 60.0) -> bool:
-        self._require_connected()
-        self._ensure_mode("NRT_PRIMITIVE_EXECUTION")
-        vel_scale = self._control_config.get("home_velocity_scale", 50)
-        if velocity is not None:
-            vel_scale = _to_scale(velocity)
-        self._robot.SetVelocityScale(vel_scale)
-        self._robot.ExecutePrimitive("Home", {}, True)
-        return self._wait_primitive_done(timeout_s)
+        home = self.get_params().home_position
+        if not home:
+            raise RuntimeError("未配置 Home 位置")
+        if velocity is None:
+            vel_scale = float(self._control_config.get("home_velocity_scale", 50))
+            velocity = max(1.0, min(100.0, vel_scale)) / 100.0
+        return self.move_joint_position(
+            home,
+            velocity=velocity,
+            timeout_s=timeout_s,
+        )
 
     # ================================================================
     #  Flexiv 特有方法 (不在基类中)

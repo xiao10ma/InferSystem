@@ -1,3 +1,4 @@
+from .logging import setup_run_logger
 from .registry import Registrable
 from .types import (
     Action,
@@ -7,6 +8,7 @@ from .types import (
     Observation,
     RobotParams,
     SensorFrame,
+    load_config,
     load_yaml,
     utc_now,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "Registrable",
     "RobotParams",
     "SensorFrame",
+    "load_config",
     "load_yaml",
+    "setup_run_logger",
     "utc_now",
 ]

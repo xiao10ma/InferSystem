@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import sys
 import time
 from datetime import datetime
@@ -45,8 +46,7 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from Core import Action, ActionSpace
-
-
+from Core.logging import setup_run_logger
 from Robot import BaseRobot
 
 # 14 维关节名称
@@ -56,8 +56,7 @@ JOINT_NAMES_14 = [
 ]
 
 
-def log(msg: str) -> None:
-    print(msg, flush=True)
+log = logging.getLogger(__name__)
 
 
 def save_tracking_log(
@@ -87,7 +86,7 @@ def save_tracking_log(
                 row += [f"{tgt[j]:.6f}", f"{act[j]:.6f}", f"{err:.6f}"]
             writer.writerow(row)
 
-    log(f"  跟踪日志已保存: {csv_path}")
+    log.info(f"  跟踪日志已保存: {csv_path}")
     return csv_path
 
 
@@ -103,7 +102,7 @@ def plot_tracking(
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        log("[WARN] matplotlib 未安装，跳过画图 (pip install matplotlib)")
+        log.warning(" matplotlib 未安装，跳过画图 (pip install matplotlib)")
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +139,7 @@ def plot_tracking(
     overview_path = out_dir / "tracking_overview.png"
     fig.savefig(overview_path, dpi=150)
     plt.close(fig)
-    log(f"  总览图已保存: {overview_path}")
+    log.info(f"  总览图已保存: {overview_path}")
 
     # ---------- 误差图 ----------
     fig2, axes2 = plt.subplots(n_rows, n_cols, figsize=(16, 3 * n_rows), sharex=True)
@@ -165,20 +164,20 @@ def plot_tracking(
     error_path = out_dir / "tracking_error.png"
     fig2.savefig(error_path, dpi=150)
     plt.close(fig2)
-    log(f"  误差图已保存: {error_path}")
+    log.info(f"  误差图已保存: {error_path}")
 
     # ---------- PD 诊断摘要 ----------
-    log("\n  ══ PD 跟踪诊断摘要 ══")
+    log.info("\n  ══ PD 跟踪诊断摘要 ══")
     for j in range(n_dim):
         if j in (6, 13):
             rms = np.sqrt(np.mean(err_arr[:, j] ** 2)) * 1000  # mm
             peak = np.max(np.abs(err_arr[:, j])) * 1000
-            log(f"  {names[j]:>8s}: RMS={rms:7.2f} mm, Peak={peak:7.2f} mm")
+            log.info(f"  {names[j]:>8s}: RMS={rms:7.2f} mm, Peak={peak:7.2f} mm")
         else:
             rms = np.degrees(np.sqrt(np.mean(err_arr[:, j] ** 2)))
             peak = np.degrees(np.max(np.abs(err_arr[:, j])))
-            log(f"  {names[j]:>8s}: RMS={rms:7.3f} deg, Peak={peak:7.3f} deg")
-    log("")
+            log.info(f"  {names[j]:>8s}: RMS={rms:7.3f} deg, Peak={peak:7.3f} deg")
+    log.info("")
 
 
 def _find_video_keys(info: dict) -> list[str]:
@@ -213,12 +212,12 @@ class VideoPlayer:
         for name, path in video_paths.items():
             cap = cv2.VideoCapture(str(path))
             if not cap.isOpened():
-                log(f"[WARN] 无法打开视频: {path}")
+                log.warning(f" 无法打开视频: {path}")
                 continue
             self._caps[name] = cap
         if self._caps:
             names = ", ".join(self._caps.keys())
-            log(f"视频播放器已打开: {names}")
+            log.info(f"视频播放器已打开: {names}")
 
     def show_frame(self, frame_idx: int) -> bool:
         """显示第 frame_idx 帧，返回 False 表示用户按 q 退出。"""
@@ -297,7 +296,7 @@ def load_actions_from_lerobot(
         raise ValueError(f"数据集 {dataset_dir} 中无 episode 元信息")
 
     available_eps = [e["episode_index"] for e in episodes_meta]
-    log(f"数据集共 {len(episodes_meta)} 个 episode: {available_eps}")
+    log.info(f"数据集共 {len(episodes_meta)} 个 episode: {available_eps}")
 
     if episode is not None:
         targets = [e for e in episodes_meta if e["episode_index"] == episode]
@@ -328,7 +327,7 @@ def load_actions_from_lerobot(
                 all_actions.append(table[column][i].as_py())
 
     all_actions = all_actions[start:end]
-    log(f"加载完成: {len(all_actions)} 帧, action_dim={len(all_actions[0]) if all_actions else '?'}")
+    log.info(f"加载完成: {len(all_actions)} 帧, action_dim={len(all_actions[0]) if all_actions else '?'}")
     return all_actions
 
 
@@ -357,7 +356,7 @@ def load_actions(
         raise ValueError(f"parquet 列 '{column}' 为空")
 
     actions = actions[start:end]
-    log(f"加载完成: {len(actions)} 帧, action_dim={len(actions[0])}")
+    log.info(f"加载完成: {len(actions)} 帧, action_dim={len(actions[0])}")
     return actions
 
 
@@ -426,7 +425,7 @@ def load_actions_from_dcsv2(
         actions.append(act)
 
     actions = actions[start:end]
-    log(f"加载完成: {len(actions)} 帧, action_dim={len(actions[0]) if actions else '?'}")
+    log.info(f"加载完成: {len(actions)} 帧, action_dim={len(actions[0]) if actions else '?'}")
     return actions
 
 
@@ -470,7 +469,7 @@ def replay(
         info = _load_lerobot_info(data_p)
         if fps is None:
             fps = float(info.get("fps", 30.0))
-            log(f"从 info.json 读取 fps={fps}")
+            log.info(f"从 info.json 读取 fps={fps}")
         actions = load_actions_from_lerobot(data_p, episode=episode, column=column, start=start, end=end)
         # 获取目标 episode 的 chunk/file 信息（用于定位视频文件）
         if play_video and episode is not None:
@@ -481,8 +480,8 @@ def replay(
         dcsv2_meta = _load_dcsv2_metadata(data_p)
         if fps is None:
             fps = float(dcsv2_meta.get("fps_config", dcsv2_meta.get("fps_actual", 30.0)))
-            log(f"从 metadata.json 读取 fps={fps}")
-        log(f"DataCollectionSystemV2 数据集: {dcsv2_meta.get('task_title', '')} "
+            log.info(f"从 metadata.json 读取 fps={fps}")
+        log.info(f"DataCollectionSystemV2 数据集: {dcsv2_meta.get('task_title', '')} "
             f"(episode={dcsv2_meta.get('episode_id', '?')}, "
             f"total_frames={dcsv2_meta.get('total_frames', '?')})")
         actions = load_actions_from_dcsv2(data_p, start=start, end=end)
@@ -491,7 +490,7 @@ def replay(
         if fps is None:
             fps = 30.0
         if play_video:
-            log("[WARN] --play-video 仅支持 LeRobot v3.0 / DCSv2 数据集目录，忽略")
+            log.warning(" --play-video 仅支持 LeRobot v3.0 / DCSv2 数据集目录，忽略")
             play_video = False
         actions = load_actions(str(data_p), column=column, start=start, end=end)
 
@@ -499,9 +498,9 @@ def replay(
     dt = 1.0 / (fps * speed)
 
     if dry_run:
-        log(f"[DRY RUN] n_frames={n_frames}, fps={fps}, speed={speed}x, dt={dt:.4f}s")
+        log.info(f"[DRY RUN] n_frames={n_frames}, fps={fps}, speed={speed}x, dt={dt:.4f}s")
         for i, act in enumerate(actions[:5]):
-            log(f"  [{i:4d}] dim={len(act)} values={[round(float(v), 4) for v in act[:8]]}")
+            log.info(f"  [{i:4d}] dim={len(act)} values={[round(float(v), 4) for v in act[:8]]}")
         if play_video:
             if dataset_type == "lerobot" and info is not None:
                 all_video_keys = _find_video_keys(info)
@@ -509,7 +508,7 @@ def replay(
                 all_video_keys = _find_dcsv2_video_keys(data_p)
             else:
                 all_video_keys = []
-            log(f"  数据集视频: {all_video_keys}")
+            log.info(f"  数据集视频: {all_video_keys}")
         return
 
     # 准备视频播放器
@@ -531,7 +530,7 @@ def replay(
                 if matched:
                     selected.extend(matched)
                 else:
-                    log(f"[WARN] 未找到匹配 '{cam}' 的视频，可用: {all_video_keys}")
+                    log.warning(f" 未找到匹配 '{cam}' 的视频，可用: {all_video_keys}")
             video_keys = list(dict.fromkeys(selected))  # 去重保序
         else:
             video_keys = all_video_keys
@@ -547,7 +546,7 @@ def replay(
                         short = vk.replace("observation.images.", "")
                         video_paths[short] = vp
                     else:
-                        log(f"[WARN] 视频文件不存在: {vp}")
+                        log.warning(f" 视频文件不存在: {vp}")
             elif dataset_type == "dcsv2":
                 for vk in video_keys:
                     vp = data_p / vk / "video.mp4"
@@ -555,7 +554,7 @@ def replay(
                         short = vk.replace("observation.image.", "")
                         video_paths[short] = vp
                     else:
-                        log(f"[WARN] 视频文件不存在: {vp}")
+                        log.warning(f" 视频文件不存在: {vp}")
             if video_paths:
                 video_player = VideoPlayer(video_paths)
 
@@ -574,16 +573,16 @@ def replay(
     track_actuals: list[list[float]] = []
 
     try:
-        log("[1] 从配置创建机器人...")
+        log.info("[1] 从配置创建机器人...")
         with BaseRobot.from_config(config_path) as robot:
             if robot.is_fault():
-                log("[!] 检测到故障，clear_fault...")
+                log.info("[!] 检测到故障，clear_fault...")
                 robot.clear_fault()
                 time.sleep(1.5)
             robot.enable()
             if not robot.wait_until_operational(timeout_s=20.0):
                 raise RuntimeError("机器人未能在超时时间内变为 operational")
-            log(f"[2] 机器人 '{robot.name}' 已 operational (dof={robot.dof})")
+            log.info(f"[2] 机器人 '{robot.name}' 已 operational (dof={robot.dof})")
 
             # 打印当前 PD 增益信息（辅助调试）
             if hasattr(robot, '_ctrls') and robot._ctrls is not None:
@@ -591,16 +590,16 @@ def replay(
                     gain = robot._ctrls[idx].get_gain()
                     kp = np.array(gain.kp())
                     kd = np.array(gain.kd())
-                    log(f"  [{tag}] joint kp={kp}, kd={kd}")
-                    log(f"  [{tag}] gripper kp={gain.gripper_kp:.3f}, kd={gain.gripper_kd:.3f}")
+                    log.info(f"  [{tag}] joint kp={kp}, kd={kd}")
+                    log.info(f"  [{tag}] gripper kp={gain.gripper_kp:.3f}, kd={gain.gripper_kd:.3f}")
 
             # replay 前先回 Home，从已知安全位置出发
             if home_before:
-                log("[3] 回 Home（避免从任意姿态直接跳到第一帧）...")
+                log.info("[3] 回 Home（避免从任意姿态直接跳到第一帧）...")
                 robot.go_home()
 
-            log(f"[4] 开始 replay: {n_frames} 帧, fps={fps}, speed={speed}x")
-            log(f"    跟踪数据将保存到: {tracking_dir}")
+            log.info(f"[4] 开始 replay: {n_frames} 帧, fps={fps}, speed={speed}x")
+            log.info(f"    跟踪数据将保存到: {tracking_dir}")
             frame_count = 0
             log_interval = max(int(fps), 1)
             # start 偏移量，用于视频帧对齐
@@ -612,7 +611,7 @@ def replay(
                 try:
                     robot.act(Action(ActionSpace.JOINT_POSITION, values))
                 except Exception as exc:
-                    log(f"[!] 帧 {i} 执行失败: {exc}")
+                    log.info(f"[!] 帧 {i} 执行失败: {exc}")
                     break
                 frame_count += 1
 
@@ -624,7 +623,7 @@ def replay(
 
                 if video_player and video_player.active:
                     if not video_player.show_frame(frame_offset + i):
-                        log("[!] 用户按 q 退出视频播放")
+                        log.info("[!] 用户按 q 退出视频播放")
                         break
 
                 if i % log_interval == 0:
@@ -636,22 +635,22 @@ def replay(
                             f"lj0={q[0]:.4f} rj0={q[7]:.4f} lg={q[6]:.4f} rg={q[13]:.4f} "
                             f"| max_err={np.degrees(err[max_err_idx]):.2f}deg @{JOINT_NAMES_14[max_err_idx]}")
                     else:
-                        log(f"  [{i:4d}/{n_frames}] j0={q[0]:.4f}")
+                        log.info(f"  [{i:4d}/{n_frames}] j0={q[0]:.4f}")
 
                 elapsed = time.perf_counter() - t_loop
                 if elapsed < dt:
                     time.sleep(dt - elapsed)
 
-            log(f"[5] Replay 完成: {frame_count}/{n_frames} 帧")
+            log.info(f"[5] Replay 完成: {frame_count}/{n_frames} 帧")
 
             if home_after:
-                log("[6] 回 Home...")
+                log.info("[6] 回 Home...")
                 robot.go_home()
-                log("[7] Home 完成")
+                log.info("[7] Home 完成")
 
         # replay 结束后保存跟踪数据并画图
         if track_timestamps:
-            log("[8] 保存跟踪数据与分析图...")
+            log.info("[8] 保存跟踪数据与分析图...")
             save_tracking_log(tracking_dir, track_timestamps, track_targets, track_actuals)
             plot_tracking(tracking_dir, track_timestamps, track_targets, track_actuals)
     finally:
@@ -680,6 +679,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    setup_run_logger(__file__, args.config)
     replay(
         config_path=args.config,
         data_path=args.data_path,
