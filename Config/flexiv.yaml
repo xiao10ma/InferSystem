@@ -45,7 +45,7 @@ cameras:
     serial_number: "236422070023"
     enable_depth: false
     streams:
-      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
+      color: {width: 640, height: 480, fps: 60, encoding: bgr8}
     params:
       exposure.auto: true
 
@@ -54,7 +54,7 @@ cameras:
     serial_number: "349622074137"
     enable_depth: false
     streams:
-      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
+      color: {width: 640, height: 480, fps: 60, encoding: bgr8}
     params:
       exposure.auto: true
 
@@ -63,7 +63,7 @@ cameras:
     serial_number: "260322271985"
     enable_depth: false
     streams:
-      color: {width: 640, height: 480, fps: 30, encoding: bgr8}
+      color: {width: 640, height: 480, fps: 60, encoding: bgr8}
     params:
       exposure.auto: true
 
