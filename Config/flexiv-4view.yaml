@@ -114,9 +114,13 @@ inference:
   smooth:
     enabled: false
     overlap_steps: 8
+  # enabled: true + mode: tactile_plan 走 tactile expert 异步（prepare/refine）
+  # stateful tactile 协议（server 端模型需支持，见 Inference/README.md）。
   async:
     enabled: false
-    obs_fps: 4
+    mode: tactile_plan
+    obs_fps: null        # tactile_plan 下 null = 控制 fps；chunk 模式建议 4
+    delay_init: 2        # refine 在途期间被消费步数的初始估计
     max_latency_steps: 8
 
   # EEF 安全限幅：目标 action 相对当前末端位姿超过以下阈值会被拒绝。

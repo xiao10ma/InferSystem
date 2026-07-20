@@ -7,11 +7,14 @@ from .action_smoothing import TemporalActionSmoother
 from .async_worker import AsyncInferenceWorker, InferenceObservationSnapshot
 from .dispatch import ActionDispatcher, build_eef_state_vector, build_policy_state_vector, build_state_vector
 from .obs_mapping import build_camera_key_map, map_image_keys
+from .tactile_plan_worker import StatefulTactileProtocolError, TactilePlanWorker
 
 __all__ = [
     "ActionDispatcher",
     "AsyncInferenceWorker",
     "InferenceObservationSnapshot",
+    "StatefulTactileProtocolError",
+    "TactilePlanWorker",
     "TemporalActionSmoother",
     "build_camera_key_map",
     "build_eef_state_vector",

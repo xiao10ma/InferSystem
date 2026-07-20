@@ -130,6 +130,30 @@ inference:
 （`null` 时默认 `min(4, fps)`），后台线程只消费 snapshot 做重规划并把返回 chunk
 融合进平滑队列，主线程按 `fps` 下发 action。
 
+## tactile expert 异步推理 (prepare/refine)
+
+针对慢速 world-model plan + tactile expert 快路径修正的模型（如 Tac_WanMoT），
+`tactile_plan_worker.py` 提供 stateful tactile 协议的真机 worker：
+
+```yaml
+inference:
+  async:
+    enabled: true
+    mode: tactile_plan   # 默认 chunk（整 chunk + 平滑）
+    obs_fps: null        # tactile_plan 下 null 默认为控制 fps
+    delay_init: 2        # refine 在途期间被消费步数的初始估计
+```
+
+- **prepare**（慢路径）: 仅在无 plan 或旧 plan 全部执行完后，用最新观测生成
+  新 plan；期间 `pop_action()` 返回 None，机器人保持不动。
+- **refine**（快路径）: 每收到新观测就修正未执行后缀，回传已执行动作前缀做
+  锚定；已经下发给机器人的动作永远不会被改写。
+- 该模式绕过 `TemporalActionSmoother`——refine 已保证前缀连续性。
+- 协议在 predict 请求上扩展 `stateful_tactile` 控制字段 + `request_id`
+  （服务器按 request_id 对超时重试做幂等重放），响应增加 `plan` 元数据。
+  对应服务器实现: `deployment/model_server/server_infersystem.py`
+  （`metadata.supports_stateful_tactile` 为 true 时可用，启动时会校验）。
+
 相机和触觉视频设备都可以在 YAML 中配置 `mapped_key`，只影响发给 server 的图像 key。
 `inference.enabled_cameras` 是本地图像传感器白名单，可引用 `cameras` 和 `tactile` 下的 key；
 未配置时默认发送全部图像传感器。

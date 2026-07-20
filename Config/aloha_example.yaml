@@ -36,3 +36,11 @@ inference:
   smooth:
     enabled: false
     overlap_steps: 8
+
+  # 异步推理。mode: tactile_plan 走 tactile expert 异步（prepare/refine）
+  # stateful tactile 协议（需 server 端模型支持，见 Inference/README.md）。
+  # async:
+  #   enabled: true
+  #   mode: tactile_plan
+  #   obs_fps: null      # null = 控制 fps
+  #   delay_init: 2

@@ -371,13 +371,21 @@ class SmoothConfig(BaseModel):
     )
 
 
+class AsyncInferenceModeEnum(str, Enum):
+    chunk = "chunk"                # 整 chunk 请求 + 时域平滑（默认）
+    tactile_plan = "tactile_plan"  # tactile expert 异步：prepare/refine stateful tactile 协议
+
+
 class AsyncInferenceConfig(BaseModel):
     """Asynchronous inference loop config."""
     model_config = ConfigDict(populate_by_name=True)
 
     enabled: bool = False
+    mode: AsyncInferenceModeEnum = AsyncInferenceModeEnum.chunk
     obs_fps: float | None = None
     max_latency_steps: int = 8
+    # tactile_plan: refine 在途期间被消费步数的初始估计（步）
+    delay_init: int = 2
 
 
 class InferenceConfig(BaseModel):

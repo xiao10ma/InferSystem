@@ -205,7 +205,44 @@ class InferenceClient:
         """清空 action 队列，下次 get_action 时会请求新 chunk。"""
         self._action_queue.clear()
 
+    # ── Stateful tactile (prepare/refine) ──
+
+    def predict_stateful(
+        self,
+        images: dict[str, np.ndarray],
+        state: np.ndarray | list[float],
+        *,
+        prompt: str = "",
+        extra: dict[str, Any] | None = None,
+        stateful_tactile: dict[str, Any],
+        actions_prefix: list[list[float]] | None = None,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """发送 stateful tactile prepare/refine 请求，返回完整响应。
+
+        Args:
+            stateful_tactile: 协议控制字段 (op/plan_id/action_offset/tactile_seq...)
+            actions_prefix: refine 时回传的已执行动作前缀
+            request_id: 请求唯一 ID，服务器据此对超时重试做幂等重放
+
+        Returns:
+            完整响应 dict，含 "actions" (修正后的完整序列) 和 "plan" 元数据
+        """
+        self._ensure_connected()
+        payload = self._encode_observation(images, state, prompt=prompt, extra=extra)
+        payload["stateful_tactile"] = dict(stateful_tactile)
+        payload["request_id"] = request_id
+        if actions_prefix is not None:
+            payload["actions"] = actions_prefix
+        return self._request(payload)
+
     # ── 控制命令 ──
+
+    def get_metadata(self) -> dict[str, Any]:
+        """获取服务器元信息 (cmd=metadata)。"""
+        self._ensure_connected()
+        resp = self._request({"cmd": "metadata"})
+        return resp.get("metadata", {})
 
     def reset(self) -> dict[str, Any]:
         """通知服务器重置策略。同时清空本地 action 队列。"""

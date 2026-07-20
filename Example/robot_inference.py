@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Core import Action, ActionSpace, Observation, load_config, setup_run_logger
-from Core.config_schema import SystemConfig
+from Core.config_schema import AsyncInferenceModeEnum, SystemConfig
 from Inference import InferenceClient
 from Inference.action_processing import (
     canonicalize_action_chunk,
@@ -48,6 +48,7 @@ from Inference.action_processing import (
 from Inference.action_smoothing import TemporalActionSmoother
 from Inference.async_worker import AsyncInferenceWorker, InferenceObservationSnapshot
 from Inference.dispatch import ActionDispatcher, build_policy_state_vector
+from Inference.tactile_plan_worker import TactilePlanWorker
 from Inference.obs_mapping import build_camera_key_map, map_image_keys
 from Robot import BaseRobot
 from Sensor.manager import SensorManager
@@ -817,6 +818,11 @@ def run_control_loop(
     _shutdown_refs["go_home_exit_speed_percent"] = infer_cfg.go_home_exit_speed_percent
     fps = infer_cfg.fps
     dt = 1.0 / fps
+    # tactile expert 异步推理：prepare/refine（stateful tactile 协议）
+    tactile_mode = (
+        infer_cfg.async_inference.enabled
+        and infer_cfg.async_inference.mode == AsyncInferenceModeEnum.tactile_plan
+    )
     if n_execute is None:
         n_execute = infer_cfg.n_execute
 
@@ -904,6 +910,8 @@ def run_control_loop(
                     action_trace = ActionTraceLogger(ROOT)
                     _shutdown_refs["action_trace"] = action_trace
                     async_worker: AsyncInferenceWorker | None = None
+                    tactile_worker: TactilePlanWorker | None = None
+                    effective_action_dim: int | None = None
 
                     cam_worker: BackgroundCameraWorker | None = None
                     if sensors is not None and (do_record or show_cameras):
@@ -1032,15 +1040,33 @@ def run_control_loop(
                                 if not _running:
                                     break
 
-                            # Reset policy
-                            client.reset()
+                            # Reset policy。tactile_plan 模式必须经 worker 串行化
+                            # 网络访问（REQ socket 非线程安全，且可能有在途请求）。
+                            if tactile_mode:
+                                if tactile_worker is None:
+                                    tactile_worker = TactilePlanWorker(
+                                        client,
+                                        delay_init=infer_cfg.async_inference.delay_init,
+                                        raw_action_callback=(
+                                            lambda cid, raw: action_trace.log_server_chunk(
+                                                chunk_id=cid,
+                                                raw_actions=raw,
+                                            )
+                                        ),
+                                    )
+                                    tactile_worker.start()
+                                tactile_worker.reset_episode()
+                            else:
+                                client.reset()
                             action_smoother.clear()
                             dispatcher.reset_velocity_tracking()
                             if infer_cfg.async_inference.enabled:
+                                # tactile_plan 默认按控制频率发布观测（每步一帧，
+                                # 供 refine 持续修正），chunk 模式保持低频。
                                 async_obs_fps = float(
                                     infer_cfg.async_inference.obs_fps
                                     if infer_cfg.async_inference.obs_fps is not None
-                                    else min(4.0, float(fps))
+                                    else (float(fps) if tactile_mode else min(4.0, float(fps)))
                                 )
                                 async_obs_period = 1.0 / max(async_obs_fps, 1e-6)
                                 next_async_obs_t = 0.0
@@ -1048,6 +1074,18 @@ def run_control_loop(
                                     robot.observe(),
                                     infer_cfg,
                                 )
+                            if tactile_mode:
+                                try:
+                                    tactile_worker.update_observation(_build_async_observation())
+                                    next_async_obs_t = time.perf_counter() + async_obs_period
+                                except Exception:
+                                    log.warning("tactile 初始 observation 构建失败，等待控制循环刷新", exc_info=True)
+                                log.info(
+                                    "异步 tactile plan 推理已启动: obs_fps=%.1f delay_init=%d",
+                                    async_obs_fps,
+                                    infer_cfg.async_inference.delay_init,
+                                )
+                            elif infer_cfg.async_inference.enabled:
                                 async_worker = AsyncInferenceWorker(
                                     client=client,
                                     smoother=action_smoother,
@@ -1136,7 +1174,8 @@ def run_control_loop(
                         )
 
                         if infer_cfg.async_inference.enabled:
-                            if async_worker is not None:
+                            active_worker = tactile_worker if tactile_mode else async_worker
+                            if active_worker is not None:
                                 now_obs = time.perf_counter()
                                 if now_obs >= next_async_obs_t:
                                     images_for_infer = _read_inference_images(
@@ -1145,7 +1184,7 @@ def run_control_loop(
                                         camera_key_map,
                                         sensor_read_lock,
                                     )
-                                    async_worker.update_observation(
+                                    active_worker.update_observation(
                                         InferenceObservationSnapshot(
                                             images=images_for_infer,
                                             state=state_vec,
@@ -1153,8 +1192,25 @@ def run_control_loop(
                                         )
                                     )
                                     next_async_obs_t = now_obs + async_obs_period
-                                chunk_id = async_worker.request_count
-                            action_vec = action_smoother.pop_next()
+                                chunk_id = active_worker.request_count
+                            if tactile_mode:
+                                try:
+                                    raw_action = tactile_worker.pop_action()
+                                except Exception:
+                                    log.error("异步 tactile 推理失败，停止控制循环", exc_info=True)
+                                    _running = False
+                                    break
+                                action_vec = None
+                                if raw_action is not None:
+                                    action_vec = canonicalize_action_chunk(
+                                        [raw_action],
+                                        infer_cfg.action_space,
+                                        policy_format=infer_cfg.policy_format,
+                                        canonical_dim=infer_cfg.canonical_dim,
+                                        effective_action_dim=effective_action_dim,
+                                    )[0]
+                            else:
+                                action_vec = action_smoother.pop_next()
 
                             if action_vec is None:
                                 if cam_worker is not None:
@@ -1166,8 +1222,8 @@ def run_control_loop(
                                         _reset_key_pressed = True
                                 if _reset_key_pressed:
                                     _reset_key_pressed = False
-                                    if async_worker is not None:
-                                        async_worker.pause()
+                                    if active_worker is not None:
+                                        active_worker.pause()
                                     log.info("收到 reset（r）: 保存数据 → 回起始位置 → 等待按 Enter 开始")
                                     _restart_requested = True
                                     _await_start = True
@@ -1201,8 +1257,12 @@ def run_control_loop(
                             if data_logger is not None:
                                 data_logger.log_step(step, state_vec, list(action_vec))
 
+                            n_remaining = (
+                                tactile_worker.remaining if tactile_mode
+                                else action_smoother.remaining
+                            )
                             if cam_worker is not None:
-                                cam_worker.notify(step, chunk_id, 0, action_smoother.remaining + 1)
+                                cam_worker.notify(step, chunk_id, 0, n_remaining + 1)
                                 key = cam_worker.poll_key()
                                 if key == ord("q"):
                                     _running = False
@@ -1211,8 +1271,8 @@ def run_control_loop(
 
                             if _reset_key_pressed:
                                 _reset_key_pressed = False
-                                if async_worker is not None:
-                                    async_worker.pause()
+                                if active_worker is not None:
+                                    active_worker.pause()
                                 log.info("收到 reset（r）: 保存数据 → 回起始位置 → 等待按 Enter 开始")
                                 _restart_requested = True
                                 _await_start = True
@@ -1226,7 +1286,7 @@ def run_control_loop(
                                 actual_dt = (time.perf_counter() - (next_frame_t - dt)) * 1000
                                 log.info(
                                     "Step %d: async chunk #%d remaining=%d dt=%.1fms",
-                                    step, chunk_id, action_smoother.remaining, actual_dt,
+                                    step, chunk_id, n_remaining, actual_dt,
                                 )
                             continue
 
@@ -1415,6 +1475,8 @@ def run_control_loop(
                             log.error("自动回 Home 失败", exc_info=True)
                     if async_worker is not None:
                         async_worker.stop()
+                    if tactile_worker is not None:
+                        tactile_worker.stop()
                     if cam_worker is not None:
                         cam_worker.stop()
                     if recorder is not None:
