@@ -196,6 +196,37 @@ def test_reset_episode_resets_server_and_sequence():
         worker.stop()
 
 
+def test_pop_stats_track_queue_and_obs_age():
+    client = FakeStatefulClient(horizon=6)
+    worker = TactilePlanWorker(client, delay_init=2)
+    worker.start()
+    try:
+        worker.update_observation(_snapshot(1))
+        _wait_until(lambda: worker.remaining == 6)
+        worker.pop_action()
+        stats = worker.last_pop_stats
+        assert stats["offset"] == 0
+        assert stats["obs_age_ms"] >= stats["queue_ms"] >= 0.0
+        worker.pop_action()
+
+        # refine 后，重写的后缀 slot 应带上新帧的观测时刻
+        worker.update_observation(_snapshot(2))
+        _wait_until(lambda: any(c["op"] == "refine" for c in client.calls))
+        seq = next(c for c in client.calls if c["op"] == "refine")["tactile_seq"]
+        _wait_until(lambda: _peek(worker, 4)[0] == 1000.0 * seq + 4)
+        with worker._condition:
+            plan = worker._plan
+            assert plan.obs_times[4] > plan.obs_times[3]
+            assert plan.commit_times[4] > plan.commit_times[3]
+        worker.pop_action()  # off=2, 旧前缀
+        worker.pop_action()  # off=3
+        old_age = worker.last_pop_stats["obs_age_ms"]
+        worker.pop_action()  # off=4, refine 重写过
+        assert worker.last_pop_stats["obs_age_ms"] < old_age
+    finally:
+        worker.stop()
+
+
 def test_worker_error_raises_on_pop():
     client = FakeStatefulClient()
     client.fail_ops = {"prepare"}

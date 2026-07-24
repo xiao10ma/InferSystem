@@ -1245,6 +1245,13 @@ def run_control_loop(
 
                             dispatcher.dispatch(action_vec, state=arm_state)
                             step += 1
+                            if tactile_mode and tactile_worker.last_pop_stats is not None:
+                                _ps = tactile_worker.last_pop_stats
+                                log.info(
+                                    "act step=%d off=%d obs_age=%.0fms queue=%.0fms",
+                                    step, int(_ps["offset"]),
+                                    _ps["obs_age_ms"], _ps["queue_ms"],
+                                )
                             action_trace.log_publish_step(
                                 step=step,
                                 chunk_id=chunk_id,

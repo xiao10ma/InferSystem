@@ -35,6 +35,7 @@ class StatefulTactileProtocolError(RuntimeError):
 @dataclass(frozen=True)
 class _ObservationFrame:
     seq: int
+    created_at: float  # 观测发布时刻 (perf_counter)
     snapshot: InferenceObservationSnapshot
 
 
@@ -43,6 +44,8 @@ class _ActionPlan:
     generation: int
     plan_id: str
     actions: np.ndarray  # 服务器原始动作序列 (T, D)，canonicalize 由消费方处理
+    obs_times: np.ndarray  # (T,) 每个 slot 来源请求所用观测的发布时刻
+    commit_times: np.ndarray  # (T,) 每个 slot 最近一次被 prepare/refine 写入的时刻
     offset: int
     horizon: int
     replan_after_frame_seq: int = -1
@@ -103,6 +106,9 @@ class TactilePlanWorker:
         self._thread: threading.Thread | None = None
         self.request_count = 0
         self.last_infer_ms: float | None = None
+        # 最近一次 pop_action 的延迟统计:
+        #   obs_age_ms — 动作来源观测到出队的延迟; queue_ms — 动作写入 plan 后排队时长
+        self.last_pop_stats: dict[str, float] | None = None
 
     # ── 生命周期 ──
 
@@ -163,7 +169,11 @@ class TactilePlanWorker:
             meta=dict(obs.meta),
         )
         with self._condition:
-            self._latest_frame = _ObservationFrame(seq=self._frame_seq, snapshot=snapshot)
+            self._latest_frame = _ObservationFrame(
+                seq=self._frame_seq,
+                created_at=time.perf_counter(),
+                snapshot=snapshot,
+            )
             self._frame_seq += 1
             self._condition.notify_all()
 
@@ -177,6 +187,12 @@ class TactilePlanWorker:
             plan = self._plan
             if plan is None or plan.offset >= plan.horizon:
                 return None
+            now = time.perf_counter()
+            self.last_pop_stats = {
+                "offset": plan.offset,
+                "obs_age_ms": (now - float(plan.obs_times[plan.offset])) * 1000,
+                "queue_ms": (now - float(plan.commit_times[plan.offset])) * 1000,
+            }
             action = plan.actions[plan.offset].tolist()
             next_offset = plan.offset + 1
             replan_after = plan.replan_after_frame_seq
@@ -300,16 +316,26 @@ class TactilePlanWorker:
                 current = self._plan
                 if current is None or current.generation != previous.generation:
                     return
+            now = time.perf_counter()
             self._plan_generation += 1
             self._plan = _ActionPlan(
                 generation=self._plan_generation,
                 plan_id=plan_id,
                 actions=actions,
+                obs_times=np.full(len(actions), job.frame.created_at),
+                commit_times=np.full(len(actions), now),
                 offset=0,
                 horizon=horizon,
             )
             self._last_refine_offset = 0
             self._condition.notify_all()
+        logger.info(
+            "tactile prepare #%d: horizon=%d infer=%.0fms obs_age=%.0fms",
+            self.request_count,
+            horizon,
+            self.last_infer_ms,
+            (time.perf_counter() - job.frame.created_at) * 1000,
+        )
 
     def _run_refine(self, job: _InferenceJob) -> None:
         plan = job.plan
@@ -337,14 +363,34 @@ class TactilePlanWorker:
                 or current.plan_id != plan.plan_id
             ):
                 return
-            self._delay_history.append(current.offset - plan.offset)
+            consumed_in_flight = current.offset - plan.offset
+            self._delay_history.append(consumed_in_flight)
             commit_offset = max(current.offset, job.refine_offset)
             if commit_offset < current.horizon:
                 # 请求在途期间已消费的动作保持不可变。
+                now = time.perf_counter()
                 merged = current.actions.copy()
                 merged[commit_offset:] = actions[commit_offset:]
-                self._plan = replace(current, actions=merged)
+                merged_obs = current.obs_times.copy()
+                merged_obs[commit_offset:] = job.frame.created_at
+                merged_commit = current.commit_times.copy()
+                merged_commit[commit_offset:] = now
+                self._plan = replace(
+                    current,
+                    actions=merged,
+                    obs_times=merged_obs,
+                    commit_times=merged_commit,
+                )
             self._condition.notify_all()
+        logger.info(
+            "tactile refine #%d: offset %d→commit %d 在途消费 %d 步 infer=%.0fms obs_age=%.0fms",
+            self.request_count,
+            job.refine_offset,
+            commit_offset,
+            consumed_in_flight,
+            self.last_infer_ms,
+            (time.perf_counter() - job.frame.created_at) * 1000,
+        )
 
     def _infer(
         self,
