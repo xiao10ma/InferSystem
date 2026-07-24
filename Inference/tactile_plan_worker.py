@@ -236,10 +236,14 @@ class TactilePlanWorker:
                             continue
                         op = "prepare"
                     elif frame.seq > last_frame_seq:
-                        # 预留 refine 在途期间机器人会消费掉的步数。
+                        # 预留 refine 在途期间机器人会消费掉的步数。下限 1：
+                        # delay_history 可能被 0 填满，prepare 刚提交时 offset=0，
+                        # 若 refine offset 为 0 会回传空前缀（协议不允许，且
+                        # prepare 本身已含 offset-0 修正，floor 到 1 无语义损失）。
                         refine_offset = max(
                             plan.offset + max(self._delay_history),
                             self._last_refine_offset,
+                            1,
                         )
                         if refine_offset >= plan.horizon:
                             if self._skip_logged_generation != plan.generation:

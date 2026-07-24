@@ -196,6 +196,42 @@ def test_reset_episode_resets_server_and_sequence():
         worker.stop()
 
 
+def test_refine_offset_floors_at_one_after_replan():
+    """delay_history 被 0 填满后，新 plan 的首个 refine 不允许空前缀 (offset 0)。
+
+    真机复现：refine 在途期间恰好没消费动作 → history 全 0 挤掉 delay_init
+    → prepare 刚提交时 refine offset 算出 0 → 空前缀在 msgpack 往返中丢失
+    动作维度，服务器按 2 维索引崩溃。
+    """
+    client = FakeStatefulClient(horizon=4)
+    worker = TactilePlanWorker(client, delay_init=2)
+    worker.start()
+    try:
+        worker.update_observation(_snapshot(1))
+        _wait_until(lambda: worker.remaining == 4)
+        # 不 pop，连发观测：每次 refine commit 都 append 在途消费 0 步
+        for i in range(12):
+            n = len(client.calls)
+            worker.update_observation(_snapshot(10 + i))
+            _wait_until(lambda: len(client.calls) > n)
+        with worker._condition:
+            assert max(worker._delay_history) == 0  # delay_init 已被挤出
+
+        # 耗尽 plan → 新帧触发 prepare → 再来一帧触发新 plan 的首个 refine
+        for _ in range(4):
+            worker.pop_action()
+        worker.update_observation(_snapshot(50))
+        _wait_until(lambda: client.plan_counter == 2)
+        n = len(client.calls)
+        worker.update_observation(_snapshot(51))
+        _wait_until(lambda: len(client.calls) > n)
+
+        refines = [c for c in client.calls if c["op"] == "refine"]
+        assert all(c["action_offset"] >= 1 and c["n_prefix"] >= 1 for c in refines)
+    finally:
+        worker.stop()
+
+
 def test_pop_stats_track_queue_and_obs_age():
     client = FakeStatefulClient(horizon=6)
     worker = TactilePlanWorker(client, delay_init=2)
