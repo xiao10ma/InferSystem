@@ -244,13 +244,36 @@ class InferenceClient:
         resp = self._request({"cmd": "metadata"})
         return resp.get("metadata", {})
 
-    def reset(self) -> dict[str, Any]:
-        """通知服务器重置策略。同时清空本地 action 队列。"""
+    def reset(self, tactile_warmup: dict[str, Any] | None = None) -> dict[str, Any]:
+        """通知服务器重置策略。同时清空本地 action 队列。
+
+        Args:
+            tactile_warmup: {mapped_key: [bgr_frame, ...]} episode 起始的连续触觉帧,
+                供服务端建立 residual/stress 基准。
+        """
         self._ensure_connected()
-        resp = self._request({"cmd": "reset"})
+        payload: dict[str, Any] = {"cmd": "reset"}
+        if tactile_warmup:
+            payload["tactile_warmup"] = {
+                name: [self._encode_png(frame, name) for frame in frames]
+                for name, frames in tactile_warmup.items()
+            }
+        resp = self._request(payload)
         self._action_queue.clear()
         logger.info("策略已重置")
         return resp
+
+    @staticmethod
+    def _encode_png(img_bgr: Any, cam_name: str) -> bytes:
+        # Lossless PNG; low compression keeps latency lower at the cost of bandwidth.
+        ok, encoded = cv2.imencode(
+            ".png",
+            np.asarray(img_bgr),
+            [cv2.IMWRITE_PNG_COMPRESSION, 1],
+        )
+        if not ok:
+            raise ValueError(f"PNG 编码失败: {cam_name}")
+        return encoded.tobytes()
 
     # ── 内部实现 ──
 
@@ -337,15 +360,6 @@ class InferenceClient:
             payload["extra"] = extra
 
         for cam_name, img_bgr in images.items():
-            img_bgr = np.asarray(img_bgr)
-            # Lossless PNG; low compression keeps latency lower at the cost of bandwidth.
-            ok, encoded = cv2.imencode(
-                ".png",
-                img_bgr,
-                [cv2.IMWRITE_PNG_COMPRESSION, 1],
-            )
-            if not ok:
-                raise ValueError(f"PNG 编码失败: {cam_name}")
-            payload[cam_name] = encoded.tobytes()
+            payload[cam_name] = self._encode_png(img_bgr, cam_name)
 
         return payload

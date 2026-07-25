@@ -141,7 +141,7 @@ class TactilePlanWorker:
             self._worker_error = None
             self._condition.notify_all()
 
-    def reset_episode(self) -> None:
+    def reset_episode(self, tactile_warmup: dict[str, Any] | None = None) -> None:
         """新 episode：清空本地状态并重置服务器端 plan 会话。"""
         with self._condition:
             self._episode_generation += 1
@@ -155,7 +155,7 @@ class TactilePlanWorker:
             self._condition.notify_all()
         # 等待在途请求结束后再复用 socket。
         with self._network_lock:
-            self._client.reset()
+            self._client.reset(tactile_warmup)
 
     # ── 主循环接口 ──
 

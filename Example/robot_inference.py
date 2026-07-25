@@ -738,6 +738,27 @@ def _read_inference_images(
     return map_image_keys(images, camera_key_map)
 
 
+def _capture_tactile_warmup(
+    sensors,
+    tactile_names: list[str],
+    camera_key_map: dict[str, str],
+    sensor_read_lock: threading.Lock,
+    frames: int = 15,
+    interval_s: float = 1.0 / 30.0,
+) -> dict[str, list[np.ndarray]] | None:
+    """采集 episode 起始的连续触觉帧（机器人未动时），供服务端建立 residual/stress 基准。"""
+    if sensors is None or not tactile_names:
+        return None
+    warmup: dict[str, list[np.ndarray]] = {}
+    for _ in range(frames):
+        with sensor_read_lock:
+            images = sensors.read_images(tactile_names)
+        for name, image in images.items():
+            warmup.setdefault(camera_key_map.get(name, name), []).append(image)
+        time.sleep(interval_s)
+    return warmup
+
+
 def _action_passes_safety(
     *,
     action_vec: list[float],
@@ -1040,6 +1061,15 @@ def run_control_loop(
                                 if not _running:
                                     break
 
+                            tactile_warmup = _capture_tactile_warmup(
+                                sensors,
+                                [
+                                    name for name in (config.tactile or {})
+                                    if not enabled_cameras or name in enabled_cameras
+                                ],
+                                camera_key_map,
+                                sensor_read_lock,
+                            )
                             # Reset policy。tactile_plan 模式必须经 worker 串行化
                             # 网络访问（REQ socket 非线程安全，且可能有在途请求）。
                             if tactile_mode:
@@ -1055,9 +1085,9 @@ def run_control_loop(
                                         ),
                                     )
                                     tactile_worker.start()
-                                tactile_worker.reset_episode()
+                                tactile_worker.reset_episode(tactile_warmup)
                             else:
-                                client.reset()
+                                client.reset(tactile_warmup)
                             action_smoother.clear()
                             dispatcher.reset_velocity_tracking()
                             if infer_cfg.async_inference.enabled:
